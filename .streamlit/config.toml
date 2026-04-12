@@ -1,7 +1,7 @@
 [theme]
-# Demografy brand colours
-primaryColor = "#7C3AED"          # Purple — main buttons, highlights
-backgroundColor = "#FFFFFF"       # White background
-secondaryBackgroundColor = "#F5F3FF"  # Light purple for sidebar
-textColor = "#1F2937"             # Dark grey text
+# Demografy official brand colours (from Brand Guidelines PDF)
+primaryColor = "#9a66ee"              # Medium Slate Blue — main buttons, highlights
+backgroundColor = "#ffffff"           # White background
+secondaryBackgroundColor = "#f3eeff"  # Very light purple tint
+textColor = "#272d2d"                 # Jet Black — body text
 font = "sans serif"

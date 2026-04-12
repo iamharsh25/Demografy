@@ -46,16 +46,16 @@ def _create_agent():
     """
     # Step 1: Connect LangChain to BigQuery
     # SQLDatabase wraps BigQuery so LangChain can inspect the schema and run queries
+    # Credentials are loaded from GOOGLE_APPLICATION_CREDENTIALS env var (set in .env)
     db = SQLDatabase.from_uri(
         "bigquery://demografy/prod_tables",
         include_tables=["a_master_view"],  # Only expose this table to the agent
-        credentials_path=os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
     )
 
     # Step 2: Create the Gemini LLM instance
     # temperature=0 means deterministic output (no randomness) — better for SQL
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash-lite-preview-06-17",
+        model="gemini-2.5-flash",
         google_api_key=os.getenv("GEMINI_API_KEY"),
         temperature=0,
     )
@@ -74,22 +74,19 @@ def _create_agent():
     return agent
 
 
-def ask(question: str) -> str:
+def ask(question: str) -> tuple[str, str | None]:
     """
-    Main function — takes a plain English question and returns a text answer.
+    Main function — takes a plain English question and returns the answer + the SQL used.
 
     This is what the Streamlit app calls when a user submits a message.
 
     Args:
         question (str): The user's natural language question.
-            e.g. "What are the top 3 suburbs in Victoria with the highest diversity?"
 
     Returns:
-        str: A plain English answer with the data.
-            e.g. "The top 3 most diverse suburbs in Victoria are:
-                  1. Keilor Downs (0.95)
-                  2. Delahey (0.94)
-                  ..."
+        tuple: (answer, sql_query)
+            answer     — plain English answer with the data
+            sql_query  — the SQL that was executed (None if not found)
 
     Raises:
         Exception: If BigQuery connection fails or Gemini returns an error.
@@ -100,8 +97,16 @@ def ask(question: str) -> str:
     if _agent is None:
         _agent = _create_agent()
 
-    # Run the agent — this triggers the full SQL generation + execution + formatting
+    # Run the agent — triggers SQL generation + execution + formatting
     result = _agent.invoke({"input": question})
 
-    # The agent returns a dict with an "output" key containing the text answer
-    return result.get("output", "Sorry, I could not find an answer to your question.")
+    # Extract the SQL query from intermediate steps
+    sql_query = None
+    for action, _ in result.get("intermediate_steps", []):
+        if hasattr(action, "tool") and action.tool == "sql_db_query":
+            tool_input = action.tool_input
+            sql_query = tool_input.get("query") if isinstance(tool_input, dict) else str(tool_input)
+            break
+
+    answer = result.get("output", "Sorry, I could not find an answer to your question.")
+    return answer, sql_query
