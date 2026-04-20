@@ -47,7 +47,7 @@ def get_client() -> bigquery.Client:
 
     credentials = service_account.Credentials.from_service_account_file(
         credentials_path,
-        scopes=["https://www.googleapis.com/auth/bigquery.readonly"],
+        scopes=["https://www.googleapis.com/auth/bigquery"],
     )
 
     project = os.getenv("BIGQUERY_PROJECT", "demografy")
