@@ -57,6 +57,7 @@ def handle_new_question(question: str) -> None:
         return
 
     st.session_state.chat_pending = True
+    st.session_state.chat_pending_armed = False
     st.session_state.chat_pending_question = question
     st.rerun()
 
@@ -66,8 +67,7 @@ def resolve_pending_question() -> None:
 
     Called once per Streamlit run before rendering. If a question was stashed
     by ``handle_new_question``, this clears the pending flag, runs ``ask()``,
-    and appends the assistant reply. Always triggers a final ``st.rerun()``
-    so the iframe re-renders with the assistant message and an enabled input.
+    and appends the assistant reply so the same run can render the result.
     """
     if not st.session_state.get("chat_pending"):
         return
@@ -75,7 +75,14 @@ def resolve_pending_question() -> None:
     question = st.session_state.get("chat_pending_question")
     if not question:
         st.session_state.chat_pending = False
+        st.session_state.chat_pending_armed = False
         return
+
+    # First pending run: render "Thinking..." state, then rerun once more
+    # before doing the expensive agent call. This keeps the UI responsive.
+    if not st.session_state.get("chat_pending_armed"):
+        st.session_state.chat_pending_armed = True
+        st.rerun()
 
     # Defer the import so we only hit the agent's heavy deps (LangChain,
     # google-genai, BigQuery) once a real question is in flight.
@@ -101,6 +108,7 @@ def resolve_pending_question() -> None:
         )
 
     st.session_state.chat_pending = False
+    st.session_state.chat_pending_armed = False
     st.session_state.chat_pending_question = None
     st.rerun()
 

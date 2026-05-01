@@ -344,10 +344,22 @@ _CHAT_JS = """
             const value = (input.value || "").trim();
             if (!value) return;
             input.value = "";
-            window.parent.postMessage(
-                { demografy_chat: "ask", question: value, ts: Date.now() },
-                "*"
-            );
+            const payload = {
+                demografy_chat: "ask",
+                question: value,
+                ts: Date.now(),
+            };
+            // Broadcast to every sibling iframe of the main page so the
+            // invisible bridge component reliably receives the payload.
+            // Cross-origin postMessage is allowed; only DOM access isn't.
+            try {
+                const frames = window.parent.frames;
+                for (let i = 0; i < frames.length; i++) {
+                    try { frames[i].postMessage(payload, "*"); } catch (_) {}
+                }
+            } catch (_) {}
+            // Belt-and-suspenders: also notify the parent window directly.
+            window.parent.postMessage(payload, "*");
         }
 
         if (sendBtn) sendBtn.addEventListener("click", sendQuestion);
@@ -368,7 +380,9 @@ def _build_chat_html(
     pending: bool,
     limit_reached: bool,
 ) -> str:
-    persist_open = "true" if pending else "false"
+    message_list = list(messages or [])
+    has_messages = bool(message_list)
+    persist_open = "true" if (pending or has_messages) else "false"
     return (
         '<div id="chat-fab" class="chat-fab">\U0001F4AC</div>'
         f'<div id="chat-widget" class="chat-widget" data-persist-open="{persist_open}" data-persist-split="false">'
@@ -379,7 +393,7 @@ def _build_chat_html(
         '<button id="cw-close" class="cw-close" aria-label="Close chat">\u2715</button>'
         "</div>"
         "</div>"
-        f'<div class="cw-body">{_render_messages_html(messages, pending)}</div>'
+        f'<div class="cw-body">{_render_messages_html(message_list, pending)}</div>'
         f"{_render_input_html(pending, limit_reached)}"
         "</div>"
     )

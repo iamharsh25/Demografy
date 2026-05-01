@@ -15,6 +15,7 @@ SESSION_DEFAULTS = [
     ("chat_messages", []),
     ("chat_open", False),
     ("chat_pending", False),
+    ("chat_pending_armed", False),
     ("chat_pending_question", None),
     ("chat_last_ts", None),
 ]

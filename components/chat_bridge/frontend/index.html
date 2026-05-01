@@ -12,9 +12,16 @@
     /*
      * Demografy chat bridge.
      *
-     * Listens for window-level postMessage events of the shape:
+     * The chat widget (rendered in the body iframe) broadcasts user input as a
+     * postMessage to every sibling iframe of the Streamlit page. This bridge
+     * iframe listens on its own window for messages of the shape:
      *   { demografy_chat: "ask", question: string, ts: number }
-     * and forwards them to Python via Streamlit's component value channel.
+     * and forwards them to Python via Streamlit's simple message protocol.
+     *
+     * We deliberately use the legacy postMessage handshake (componentReady,
+     * setFrameHeight, setComponentValue) instead of pulling in
+     * `streamlit-component-lib`, which would require a build step and an
+     * external CDN load that can fail and break the bridge.
      */
 
     (function () {

@@ -31,10 +31,6 @@ user = st.session_state.get("user")
 chat_visible = user is not None
 
 if chat_visible:
-    # Phase 2 first: if last run stashed a pending question, run the agent now
-    # so the assistant reply lands in the same render the input gets re-enabled.
-    resolve_pending_question()
-
     # Phase 1: forward any new bridge value into the chat engine.
     maybe_consume_bridge(render_bridge())
 
@@ -51,3 +47,7 @@ render_body(
     limit_reached=limit_reached,
 )
 render_chatbox()
+
+if chat_visible:
+    # Phase 2 runs after render so the user can see immediate pending UI.
+    resolve_pending_question()
