@@ -1,11 +1,15 @@
 """
-Demografy Insights Chatbot — Streamlit App
+Demografy Insights Chatbot - Streamlit App
 Run with: streamlit run app.py
 """
 
 import os
 import uuid
 import streamlit as st
+import streamlit.components.v1 as components
+import json
+import threading
+import time
 from dotenv import load_dotenv
 from datetime import date, timedelta
 
@@ -14,7 +18,7 @@ load_dotenv()
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Demografy Insights",
-    page_icon="🏘️",
+    page_icon="D",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -35,6 +39,11 @@ def load_css():
     #MainMenu {visibility: hidden;}
     footer     {visibility: hidden;}
     header     {visibility: hidden;}
+
+    .stApp {
+        background: #f7f5fb;
+        color: #272d2d;
+    }
 
     .block-container {
         padding-top: 1rem;
@@ -365,6 +374,7 @@ def render_login():
                     try:
                         from auth.rbac import get_user
                         user = get_user(user_id_input.strip())
+
                         if user is None:
                             print(f"[LOGIN] Failed for user_id='{user_id_input.strip()}'")
                             st.error("User not found or account is inactive. Please check your User ID.")
@@ -483,6 +493,82 @@ tier           = user["tier"]
 question_count = st.session_state.question_count
 limit          = get_question_limit(tier)
 messages       = st.session_state.messages
+
+
+# Layout
+if st.session_state.panel_open:
+    left, right = st.columns([1, 3])
+else:
+    left, right = st.columns([0.08, 3])
+
+# Left panel
+with left:
+    if st.session_state.panel_open:
+        if st.button("Collapse", help="Collapse panel", key="collapse"):
+            st.session_state.panel_open = False
+            st.rerun()
+
+        # Tier badge HTML
+        tier_badge = f'<span class="tier-badge-{tier}">{tier.upper()}</span>'
+
+        st.markdown(f"""
+        <div class="left-panel">
+            <div style="margin-bottom:20px;">
+                <span style="color:white;font-size:1.4rem;font-weight:900;letter-spacing:-1px;font-family:'Open Sans',sans-serif;">
+                    D<span style="color:#d8f2d0;">emografy</span>
+                </span>
+            </div>
+            <div class="left-title">Insights<br>Engine</div>
+            <div class="left-subtitle">
+                Ask questions about Australian suburb demographics in plain English.
+            </div>
+            <div class="left-metric">
+                <div class="left-metric-value">2,329</div>
+                <div class="left-metric-label">SA2 areas</div>
+            </div>
+            <div class="left-metric">
+                <div class="left-metric-value">10</div>
+                <div class="left-metric-label">Demographic KPIs</div>
+            </div>
+            <div class="left-metric">
+                <div class="left-metric-value">Live</div>
+                <div class="left-metric-label">Live data answers</div>
+            </div>
+
+            <div style="margin-top: 24px; color: rgba(255,255,255,0.7); font-size: 0.78rem;">
+                {user['user_id']} {tier_badge}<br>
+                <div style="margin-top: 10px; background: rgba(255,255,255,0.1); border-radius: 10px; padding: 10px 14px;">
+                    Questions: {question_count} / {limit}
+                </div>
+            </div>
+
+            <div class="left-examples">
+                Try asking:<br>
+                "Top 3 diverse suburbs in Victoria?"<br>
+                "Avg prosperity score in NSW?"<br>
+                "Cheapest rentals in QLD?"
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Logout button
+        if st.button("Sign Out", key="logout"):
+            st.session_state.user = None
+            st.session_state.question_count = 0
+            st.session_state.messages = []
+            st.session_state.last_query_context = None
+            # Clear persisted browser session and remove query param
+            try:
+                components.html(
+                    "<script>localStorage.removeItem('demografy_user'); if(window.history && history.replaceState){ const u=new URL(window.location); u.searchParams.delete('user'); history.replaceState(null,'', u); }</script>",
+                    height=0,
+                )
+            except Exception:
+                pass
+            try:
+                st.experimental_set_query_params()
+            except Exception:
+                pass
 
 left, right = st.columns([0.18, 3.82])
 
