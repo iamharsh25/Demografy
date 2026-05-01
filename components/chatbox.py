@@ -32,6 +32,11 @@ _CHAT_CSS = """
         z-index: 2200;
         transition: transform 0.15s ease, box-shadow 0.15s ease;
     }
+    .chat-fab.hidden {
+        opacity: 0;
+        pointer-events: none;
+        transform: scale(0.92);
+    }
     .chat-fab:hover {
         transform: translateY(-1px) scale(1.03);
         box-shadow: 0 18px 34px rgba(94, 23, 235, 0.4), 0 6px 16px rgba(94, 23, 235, 0.28);
@@ -213,11 +218,13 @@ _CHAT_JS = """
             widget.classList.add("open");
             widget.classList.remove("split");
             if (page) page.classList.remove("chat-split");
+            fab.classList.add("hidden");
         };
         const closeWidget = () => {
             widget.classList.remove("open");
             widget.classList.remove("split");
             if (page) page.classList.remove("chat-split");
+            fab.classList.remove("hidden");
         };
 
         fab.addEventListener("click", () => {
