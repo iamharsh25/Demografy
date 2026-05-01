@@ -377,6 +377,89 @@ def _extract_sql_from_text(output_text: str) -> str | None:
     return None
 
 
+def _strip_sql_from_answer(answer: str) -> str:
+    """Remove SQL/debug blocks AND inline DB identifiers before showing users.
+
+    Defence-in-depth: even if the prompt slips and the LLM mentions a column
+    or table name, the user should never see it. We strip in this order:
+      1. Marker/fenced SQL blocks (largest noise first).
+      2. Lines that read like raw SQL (start with SELECT/WHERE/etc.).
+      3. Inline schema/column/table tokens that occasionally surface in
+         explanatory prose (e.g. "Diversity index (kpi_2_val) shown...").
+      4. Whitespace tidy so removals don't leave dangling parens or "  ".
+    """
+    import re
+
+    text = (answer or "").strip()
+    if not text:
+        return text
+
+    # Remove explicit marker blocks first.
+    text = re.sub(
+        r"===SQL_START===.*?===SQL_END===",
+        "",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Remove fenced SQL blocks.
+    text = re.sub(r"```sql.*?```", "", text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Remove raw SQL line noise that occasionally leaks.
+    sqlish = re.compile(
+        r"^\s*(SELECT|WITH|FROM|WHERE|JOIN|LEFT JOIN|RIGHT JOIN|INNER JOIN|"
+        r"ORDER BY|GROUP BY|LIMIT|HAVING|UNION|INSERT|UPDATE|DELETE|CREATE|DROP)\b",
+        flags=re.IGNORECASE,
+    )
+    kept_lines = []
+    for line in text.splitlines():
+        if sqlish.match(line):
+            continue
+        if line.strip().startswith("SQL Query:"):
+            continue
+        kept_lines.append(line)
+
+    text = "\n".join(kept_lines)
+
+    # Strip inline schema/table references (with or without backticks).
+    text = re.sub(
+        r"`?demografy\.(?:prod_tables|ref_tables)\.[a-z_0-9]+`?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"`?\ba_master_view\b`?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"`?\bdev_customers\b`?", "", text, flags=re.IGNORECASE)
+
+    # Strip parenthetical column refs first so we cleanly remove the
+    # surrounding "()" instead of leaving "()" behind:
+    #   "Diversity index (kpi_2_val) shown..." -> "Diversity index shown..."
+    text = re.sub(
+        r"\s*\(\s*(?:kpi_\d+_(?:val|ind)|sa2_(?:name|code)|sa[34]_name)\s*\)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Strip bare inline column tokens.
+    text = re.sub(
+        r"\b(?:kpi_\d+_(?:val|ind)|sa2_(?:name|code)|sa[34]_name)\b",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Tidy artifacts left over from removals.
+    text = re.sub(r"\(\s*\)", "", text)            # empty parens
+    text = re.sub(r"`\s*`", "", text)              # empty backticks
+    text = re.sub(r"[ \t]+([,.;:%])", r"\1", text)  # space before punctuation
+    text = re.sub(r"[ \t]{2,}", " ", text)         # collapse runs of spaces
+    text = re.sub(r" +\n", "\n", text)             # trailing space on lines
+    text = re.sub(r"\n{3,}", "\n\n", text)         # excessive blank lines
+
+    return text.strip()
+
+
 def _rows_from_dataframe(df):
     if df is None or df.empty:
         return []
@@ -441,6 +524,75 @@ def _answer_template_question(question: str) -> tuple[str, str] | None:
     return _format_template_answer(intent, rows), sql
 
 
+# Words that commonly wrap a state in a follow-up question and should be
+# stripped before deciding "is this just a state name?".
+_FOLLOWUP_FILLERS = frozenset({
+    "what", "about", "and", "now", "how", "for", "the", "please", "tell",
+    "me", "also", "then", "so", "ok", "okay", "hey", "plus", "again", "in",
+    "of", "to", "from", "on", "show",
+})
+
+
+def _detect_state_only_followup(text: str) -> str | None:
+    """Return the canonical state name if ``text`` is essentially a state.
+
+    Matches things like "what about NSW?", "and Queensland?", "now in Tas",
+    "for the NT?", "Western Australia". Returns None for anything that
+    carries its own intent (metric, top-N, comparison, etc.) so we don't
+    accidentally short-circuit a real new question.
+    """
+    if not text:
+        return None
+    normalized = text.lower().strip()
+    if not normalized or len(normalized.split()) > 6:
+        return None
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    tokens = [tok for tok in cleaned.split() if tok and tok not in _FOLLOWUP_FILLERS]
+    if not tokens:
+        return None
+    residue = " ".join(tokens).strip()
+    return STATE_ALIASES.get(residue)
+
+
+def _template_followup_answer(
+    history: list[dict] | None,
+    new_state: str,
+) -> tuple[str, str] | None:
+    """Reuse a prior templatable user turn with the state swapped.
+
+    Walks history newest-to-oldest; for each user turn we either swap the
+    existing state alias for ``new_state`` (if one is mentioned) or append
+    "in <new_state>". The first rewrite that the deterministic template
+    matcher can answer wins. Returns None when no prior turn is templatable
+    so the caller can fall back to the LLM with full context.
+    """
+    if not history:
+        return None
+    aliases = sorted(STATE_ALIASES.keys(), key=len, reverse=True)
+    for turn in reversed(history):
+        if turn.get("role") != "user":
+            continue
+        prev = (turn.get("content") or "").strip()
+        if not prev:
+            continue
+
+        rewritten = prev
+        replaced = False
+        for alias in aliases:
+            pattern = re.compile(rf"\b{re.escape(alias)}\b", flags=re.IGNORECASE)
+            if pattern.search(rewritten):
+                rewritten = pattern.sub(new_state, rewritten, count=1)
+                replaced = True
+                break
+        if not replaced:
+            rewritten = f"{prev.rstrip('?').rstrip()} in {new_state}"
+
+        templated = _answer_template_question(rewritten)
+        if templated:
+            return templated
+    return None
+
+
 def _create_agent():
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash-lite",
@@ -461,15 +613,49 @@ def _create_agent():
     return agent
 
 
-def ask(question: str, callbacks=None) -> tuple[str, str | None]:
+def ask(
+    question: str,
+    callbacks=None,
+    history: list[dict] | None = None,
+) -> tuple[str, str | None]:
+    """Answer a user question, optionally using prior chat history for context.
+
+    ``history`` is a list of ``{"role": "user"|"assistant", "content": str}``
+    records (most-recent-last). When provided, a short transcript is
+    prepended to the agent input so follow-ups like "diversity" can resolve
+    against the previous turn. Template fast-path answers ignore history
+    since they're keyword-matched and don't benefit from context.
+    """
     global _agent
 
     template_answer = _answer_template_question(question)
     if template_answer:
         return template_answer
 
+    # Deterministic state-swap follow-up: "what about NSW?", "and Queensland?",
+    # etc. We rewrite the most recent templatable user turn with the new state
+    # and re-run the template matcher. Bypasses the LLM, so the answer is
+    # identical in shape and reliability to the original templated reply.
+    new_state = _detect_state_only_followup(question)
+    if new_state and history:
+        followup = _template_followup_answer(history, new_state)
+        if followup:
+            return followup
+
     if _agent is None:
         _agent = _create_agent()
+
+    # Build the agent input. Plain question when there's no prior context;
+    # otherwise prefix a "Previous conversation" block so the LLM can
+    # interpret follow-up questions correctly.
+    agent_input = question
+    if history:
+        # Local import to avoid a hard dependency for non-Streamlit callers.
+        from chat_history.context import build_context_block
+
+        context_block = build_context_block(history)
+        if context_block:
+            agent_input = f"{context_block}Current question: {question}"
 
     # Capture verbose output to extract SQL
     import io
@@ -478,7 +664,7 @@ def ask(question: str, callbacks=None) -> tuple[str, str | None]:
     captured_output = io.StringIO()
 
     with redirect_stdout(captured_output), redirect_stderr(captured_output):
-        result = _agent.invoke({"input": question}, config={"callbacks": callbacks or []})
+        result = _agent.invoke({"input": agent_input}, config={"callbacks": callbacks or []})
 
     # Extract SQL from structured agent metadata first, then fallback to logs.
     output_text = captured_output.getvalue()
@@ -492,6 +678,7 @@ def ask(question: str, callbacks=None) -> tuple[str, str | None]:
             pass
 
     answer = (result.get("output") or "").strip()
+    answer = _strip_sql_from_answer(answer)
     if not answer:
         answer = "Sorry, I could not format an answer for that query. Please try again."
     return answer, sql_query

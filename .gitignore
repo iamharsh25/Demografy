@@ -29,3 +29,6 @@ build/
 
 # Streamlit cache
 .streamlit/secrets.toml
+
+# Per-user chat transcripts (PII; written by chat_history.storage)
+ChatHistory/

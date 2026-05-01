@@ -18,6 +18,7 @@ from auth.rbac import (
     is_limit_reached,
     should_show_warning,
 )
+from components.state import hydrate_chat_history
 
 
 @st.dialog("Sign In")
@@ -60,6 +61,8 @@ def show_login_modal() -> None:
             st.session_state.user = user
             st.session_state.question_count = 0
             st.session_state.show_user_menu = False
+            st.session_state.chat_messages = []
+            hydrate_chat_history(user["user_id"])
             st.query_params["u"] = user["user_id"]
             st.rerun()
 

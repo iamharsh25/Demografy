@@ -1,8 +1,10 @@
 """Chat lifecycle: take a user question -> run the agent -> append the reply.
 
-Owns all session-state mutations for ``chat_messages``. Designed to run
-inside an ``@st.fragment`` so the (potentially slow) ``ask()`` call only
-shows a fragment-scoped running indicator, not the page-wide fade overlay.
+Owns all session-state mutations for ``chat_messages`` and mirrors every
+turn into a per-user JSONL transcript via ``chat_history.storage`` so the
+conversation survives reloads and logouts. Designed to run inside an
+``@st.fragment`` so the (potentially slow) ``ask()`` call only shows a
+fragment-scoped running indicator, not the page-wide fade overlay.
 
 Two functions form the state machine driven by ``app_v4.py``:
 
@@ -12,9 +14,11 @@ Two functions form the state machine driven by ``app_v4.py``:
     double-process.
 
   * ``resolve_pending_question`` - if a pending question is stashed, calls
-    ``agent.sql_agent.ask`` synchronously and appends the assistant reply.
-    The chat widget JS shows the optimistic Thinking bubble, so we don't
-    need any extra rerun/arming step on the Python side.
+    ``agent.sql_agent.ask`` synchronously with the last 5 user turns as
+    context, and appends the assistant reply to both session state and
+    the on-disk transcript. The chat widget JS shows the optimistic
+    Thinking bubble, so we don't need any extra rerun/arming step on the
+    Python side.
 """
 
 from typing import Optional
@@ -26,6 +30,17 @@ from auth.rbac import (
     is_limit_reached,
     should_show_warning,
 )
+from chat_history.storage import append_message, last_n_turns
+
+
+# Number of recent user turns (with their assistant replies) to feed back
+# into the agent as context for follow-up questions.
+HISTORY_TURNS = 5
+
+
+def _get_user_id() -> Optional[str]:
+    user = st.session_state.get("user") or {}
+    return user.get("user_id")
 
 
 def _get_tier() -> str:
@@ -35,6 +50,22 @@ def _get_tier() -> str:
 
 def _append(role: str, content: str) -> None:
     st.session_state.chat_messages.append({"role": role, "content": content})
+
+
+def _persist(role: str, content: str, *, sql: Optional[str] = None) -> None:
+    """Append a message to the on-disk transcript, swallowing I/O errors.
+
+    Disk problems must never block the chat flow, so this is best-effort.
+    """
+    user_id = _get_user_id()
+    if not user_id:
+        return
+    try:
+        append_message(user_id, role, content, sql=sql)
+    except Exception:
+        # Intentionally silent: persistence is a nicety, not a hard
+        # requirement for the live UI.
+        pass
 
 
 def handle_new_question(question: str) -> None:
@@ -47,6 +78,7 @@ def handle_new_question(question: str) -> None:
     question_count = int(st.session_state.get("question_count", 0))
 
     _append("user", question)
+    _persist("user", question)
 
     if is_limit_reached(tier, question_count):
         _append(
@@ -74,15 +106,23 @@ def resolve_pending_question() -> None:
     # startup cost once a real question is in flight.
     from agent.sql_agent import ask
 
+    history = []
+    user_id = _get_user_id()
+    if user_id:
+        try:
+            history = last_n_turns(user_id, n=HISTORY_TURNS)
+        except Exception:
+            history = []
+
+    sql_query: Optional[str] = None
     try:
-        answer, _sql = ask(question)
+        answer, sql_query = ask(question, history=history)
     except Exception as exc:
         answer = f"Sorry, I hit an error answering that. ({exc})"
 
-    _append(
-        "assistant",
-        answer or "Sorry, I could not format an answer for that query.",
-    )
+    final_answer = answer or "Sorry, I could not format an answer for that query."
+    _append("assistant", final_answer)
+    _persist("assistant", final_answer, sql=sql_query)
 
     tier = _get_tier()
     question_count = int(st.session_state.get("question_count", 0)) + 1
@@ -91,6 +131,7 @@ def resolve_pending_question() -> None:
     if should_show_warning(tier, question_count):
         remaining = max(get_question_limit(tier) - question_count, 0)
         plural = "s" if remaining != 1 else ""
+        # Soft UI nudge only; intentionally not persisted to the transcript.
         _append(
             "assistant",
             f"Heads up: only {remaining} question{plural} left in this session.",

@@ -266,39 +266,54 @@ SQL: SELECT ROUND(100 * SUM(CASE WHEN kpi_2_val > 0.7 THEN 1 ELSE 0 END) / COUNT
        AND population > 100
      LIMIT 1;
 
+FOLLOW-UP HANDLING:
+If the current question is a short follow-up referring to the previous turn
+(examples: "what about NSW?", "and Queensland?", "now diversity", "top 5
+instead", "for Vic?"), interpret it relative to the most recent user message
+in the "Previous conversation" block. Reuse the same intent (top-N, average,
+comparison, percentage, etc.) and only swap the dimension the user changed
+(state, metric, limit). Output the answer in the same format as the previous
+reply.
+
+Example follow-up pattern:
+  Previous user: "Top 3 most diverse suburbs in Victoria"
+  Current question: "what about NSW?"
+  Intent: top 3 most diverse suburbs, swap state to New South Wales.
+  SQL: SELECT sa2_name, state, kpi_2_val AS diversity_index
+       FROM `demografy.prod_tables.a_master_view`
+       WHERE state = 'New South Wales'
+         AND kpi_2_val IS NOT NULL
+         AND sa2_name NOT LIKE '%Migratory%'
+         AND sa2_name NOT LIKE '%No usual address%'
+         AND sa2_name NOT LIKE '%Offshore%'
+         AND sa2_name NOT LIKE '%Industrial%'
+         AND sa2_name NOT LIKE '%Military%'
+         AND population > 100
+       ORDER BY kpi_2_val DESC
+       LIMIT 3;
+
 Now answer the user's question by writing and executing the correct SQL query.
-Always explain your answer clearly in plain English after showing the results.
-Keep your explanation concise and business-focused.
+Return ONLY the business-facing answer and keep it concise.
 
 # --- OUTPUT RULES (MANDATORY) ---
-# Always include an executable SQL query between the exact markers below:
-# ===SQL_START===
-# <SQL query here>
-# ===SQL_END===
-#
-# After those markers, return the query result only in the exact formats below:
-# - Single scalar (one-value) answers: return the value only on a single line (e.g. 25.38)
-# - Single name (e.g. a single state): return only the name on one line (e.g. Victoria)
-# - Top-N or lists: return a numbered list with each line: "1. <sa2_name>: <value>"
-# - State comparisons: return every row from the query, one numbered line per state:
+# Never reveal SQL queries, table names, schema details, or internal database metadata.
+# Never include tool traces, SQL markers, code blocks, or debugging details.
+# NEVER mention internal column names (kpi_1_val ... kpi_10_val, kpi_*_ind,
+#   sa2_name, sa2_code, sa3_name, sa4_name) or table/dataset names
+#   (a_master_view, prod_tables, ref_tables, dev_customers, demografy.*) in
+#   the user-facing answer - not even in parentheses or footnotes. Refer to
+#   metrics ONLY by their natural-language name (e.g. "diversity index",
+#   "prosperity score", "rental access").
+# Return user-friendly results only in these formats:
+# - Single scalar (one-value) answers: value only on one line (e.g. 25.38)
+# - Single name answers: name only on one line (e.g. Victoria)
+# - Top-N or lists: numbered lines "1. <suburb name>: <value>"
+# - State comparisons: one numbered line per row:
 #   "1. <state>: home ownership <value>%, rental access <value>%"
 # - Percentages: include the % sign (e.g. 57.93%)
-#
-# Do NOT include extra commentary inside the result block.
-# After the result, you may include one short sentence (<= 20 words) explaining the metric.
-#
-# Example full response:
-# ===SQL_START===
-# SELECT sa2_name, state, kpi_2_val AS diversity_index
-# FROM `demografy.prod_tables.a_master_view`
-# WHERE state = 'Victoria' AND kpi_2_val IS NOT NULL ... LIMIT 3;
-# ===SQL_END===
-#
-# 1. Keilor Downs: 0.88
-# 2. Delahey: 0.87
-# 3. St Albans - North: 0.87
-#
-# Diversity index (kpi_2_val) shown as decimal 0-1.
+# After the result, optionally add one short sentence (<= 20 words) in plain
+# English using only natural-language metric names. Do NOT add column-name
+# footnotes such as "(kpi_2_val)" or "diversity index (kpi_2_val) shown as 0-1".
 
 
 """
