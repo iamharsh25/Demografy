@@ -33,6 +33,14 @@ _BODY_CSS = """
         justify-content: center;
         padding: 56px 40px 80px;
         box-sizing: border-box;
+        transition: width 0.22s ease, max-width 0.22s ease, margin-right 0.22s ease;
+    }
+
+    .page.chat-split .canvas {
+        width: 50vw;
+        max-width: 50vw;
+        margin-right: 50vw;
+        padding-right: 24px;
     }
 
     .hero {
@@ -273,6 +281,12 @@ _BODY_CSS = """
     }
     @media (max-width: 760px) {
         .canvas { padding: 28px 16px 40px; }
+        .page.chat-split .canvas {
+            width: 100%;
+            max-width: 100%;
+            margin-right: 0;
+            padding-right: 16px;
+        }
         .hero-title { font-size: 2.4rem; }
         .hero-desc { font-size: 0.95rem; }
         .hero-cta-row { flex-wrap: wrap; }

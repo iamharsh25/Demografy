@@ -39,9 +39,10 @@ _CHAT_CSS = """
     .chat-widget {
         display: none;
         position: fixed;
-        right: 22px;
-        bottom: 94px;
-        width: 420px;
+        right: 16px;
+        bottom: 16px;
+        width: min(92vw, 560px);
+        height: min(82vh, 700px);
         max-width: calc(100vw - 24px);
         background: #fff;
         border: 1px solid #dccbff;
@@ -51,16 +52,20 @@ _CHAT_CSS = """
         z-index: 2195;
     }
     .chat-widget.open {
-        display: block;
-        animation: cwIn 0.2s ease-out;
-    }
-    .chat-widget.expanded {
-        right: 16px;
-        bottom: 16px;
-        width: min(92vw, 560px);
-        height: min(82vh, 700px);
         display: flex;
         flex-direction: column;
+        animation: cwIn 0.2s ease-out;
+    }
+    .chat-widget.split {
+        right: 0;
+        bottom: 0;
+        width: 50vw;
+        min-width: 360px;
+        max-width: 920px;
+        height: 100vh;
+        border-radius: 0;
+        border-right: none;
+        box-shadow: -12px 0 32px rgba(94, 23, 235, 0.14);
     }
     .cw-header {
         height: 56px;
@@ -89,7 +94,7 @@ _CHAT_CSS = """
     }
     .cw-close:hover, .cw-expand:hover { background: rgba(255,255,255,0.15); }
     .cw-body { padding: 12px 14px 10px; }
-    .chat-widget.expanded .cw-body { flex: 1; overflow: auto; }
+    .chat-widget .cw-body { flex: 1; overflow: auto; }
     .cw-bubble {
         background: #f3eeff;
         color: #5e17eb;
@@ -153,6 +158,20 @@ _CHAT_CSS = """
         border-radius: 8px;
     }
     .cw-send:hover { background: #f3f5f8; color: #5e17eb; }
+
+    @media (max-width: 1200px) {
+        .chat-widget.split {
+            right: 16px;
+            bottom: 16px;
+            width: min(92vw, 560px);
+            height: min(82vh, 700px);
+            min-width: 0;
+            max-width: calc(100vw - 24px);
+            border-radius: 16px;
+            border-right: 1px solid #dccbff;
+            box-shadow: 0 24px 48px rgba(94, 23, 235, 0.2), 0 6px 14px rgba(94, 23, 235, 0.12);
+        }
+    }
 """
 
 
@@ -185,14 +204,20 @@ _CHAT_JS = """
     (function () {
         const fab = document.getElementById("chat-fab");
         const widget = document.getElementById("chat-widget");
+        const page = document.querySelector(".page");
         const closeBtn = document.getElementById("cw-close");
         const expandBtn = document.getElementById("cw-expand");
         if (!fab || !widget) return;
 
-        const openWidget = () => widget.classList.add("open");
+        const openWidget = () => {
+            widget.classList.add("open");
+            widget.classList.remove("split");
+            if (page) page.classList.remove("chat-split");
+        };
         const closeWidget = () => {
             widget.classList.remove("open");
-            widget.classList.remove("expanded");
+            widget.classList.remove("split");
+            if (page) page.classList.remove("chat-split");
         };
 
         fab.addEventListener("click", () => {
@@ -205,7 +230,8 @@ _CHAT_JS = """
         if (closeBtn) closeBtn.addEventListener("click", closeWidget);
         if (expandBtn) {
             expandBtn.addEventListener("click", () => {
-                widget.classList.toggle("expanded");
+                widget.classList.toggle("split");
+                if (page) page.classList.toggle("chat-split");
             });
         }
     })();
