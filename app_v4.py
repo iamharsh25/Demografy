@@ -11,6 +11,7 @@ Run via: ``streamlit run app.py``.
 import streamlit as st
 
 from auth.rbac import is_limit_reached
+from chat_history.thread_list import list_threads
 from components.body import render_body
 from components.chat_engine import maybe_consume_bridge, resolve_pending_question
 from components.chat_widget import CHAT_WIDGET_KEY, render_chat_widget
@@ -60,10 +61,24 @@ def _chat_panel() -> None:
     user = st.session_state.get("user") or {}
     tier = user.get("tier", "free")
     question_count = int(st.session_state.get("question_count", 0))
+
+    # Past-chats list for the View overlay. Cheap directory scan; refreshes
+    # on every fragment render so a thread persisted moments ago appears
+    # without a manual reload.
+    threads: list = []
+    user_id = user.get("user_id")
+    if user_id:
+        try:
+            threads = list_threads(user_id)
+        except Exception:
+            threads = []
+
     render_chat_widget(
         messages=st.session_state.get("chat_messages", []),
         pending=bool(st.session_state.get("chat_pending")),
         limit_reached=is_limit_reached(tier, question_count),
+        threads=threads,
+        active_thread_id=st.session_state.get("chat_thread_id"),
     )
 
 

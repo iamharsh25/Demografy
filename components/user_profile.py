@@ -62,6 +62,10 @@ def show_login_modal() -> None:
             st.session_state.question_count = 0
             st.session_state.show_user_menu = False
             st.session_state.chat_messages = []
+            st.session_state.chat_thread_id = None
+            st.session_state.chat_pending = False
+            st.session_state.chat_pending_question = None
+            st.session_state.chat_last_ts = None
             hydrate_chat_history(user["user_id"])
             st.query_params["u"] = user["user_id"]
             st.rerun()
@@ -106,7 +110,17 @@ def show_user_modal() -> None:
 
 
 def _sign_out() -> None:
-    for key in ["user", "question_count", "show_user_menu", "chat_messages", "chat_open"]:
+    for key in [
+        "user",
+        "question_count",
+        "show_user_menu",
+        "chat_messages",
+        "chat_open",
+        "chat_thread_id",
+        "chat_pending",
+        "chat_pending_question",
+        "chat_last_ts",
+    ]:
         st.session_state.pop(key, None)
     st.query_params.clear()
     st.rerun()

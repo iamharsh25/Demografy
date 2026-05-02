@@ -105,11 +105,15 @@
             display: inline-flex; align-items: center; justify-content: center;
             font-size: 0.92rem;
         }
-        .cw-close, .cw-expand {
+        .cw-close, .cw-expand, .cw-new, .cw-history {
             border: none; background: transparent; color: #fff; font-size: 1rem; cursor: pointer;
             width: 28px; height: 28px; border-radius: 8px;
+            display: inline-flex; align-items: center; justify-content: center;
+            line-height: 1;
         }
-        .cw-close:hover, .cw-expand:hover { background: rgba(255,255,255,0.15); }
+        .cw-close:hover, .cw-expand:hover, .cw-new:hover, .cw-history:hover { background: rgba(255,255,255,0.15); }
+        .cw-new { font-size: 1.25rem; font-weight: 700; }
+        .cw-history svg { width: 16px; height: 16px; display: block; }
 
         .cw-body {
             padding: 14px 14px 8px;
@@ -219,6 +223,99 @@
             border-top: 1px solid #fecaca;
             flex-shrink: 0;
         }
+
+        /* ---- Past chats overlay ----------------------------------------- */
+        .cw-history-panel {
+            position: absolute;
+            inset: 56px 0 0 0; /* sit below the header */
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            z-index: 5;
+        }
+        .cw-history-panel[hidden] { display: none; }
+        .cw-history-header {
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-weight: 700;
+            font-size: 0.92rem;
+            color: #5e17eb;
+            border-bottom: 1px solid #efe6ff;
+            background: #fbf8ff;
+        }
+        .cw-history-back {
+            border: none;
+            background: transparent;
+            color: #5e17eb;
+            cursor: pointer;
+            font-size: 1rem;
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+        }
+        .cw-history-back:hover { background: #efe6ff; }
+        .cw-history-list {
+            list-style: none;
+            margin: 0;
+            padding: 6px 8px;
+            overflow: auto;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .cw-history-item {
+            border: 1px solid transparent;
+            background: #f9f5ff;
+            color: #272d2d;
+            border-radius: 10px;
+            padding: 10px 12px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            text-align: left;
+            font-family: inherit;
+            font-size: 0.88rem;
+            transition: background 0.12s ease, border-color 0.12s ease;
+        }
+        .cw-history-item:hover {
+            background: #efe6ff;
+            border-color: #d7c4ff;
+        }
+        .cw-history-item[aria-current="true"] {
+            background: #efe6ff;
+            border-color: #9a66ee;
+        }
+        .cw-history-title {
+            font-weight: 600;
+            color: #272d2d;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .cw-history-meta {
+            font-size: 0.74rem;
+            color: #6b7280;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .cw-history-chip {
+            background: rgba(94, 23, 235, 0.1);
+            color: #5e17eb;
+            border-radius: 999px;
+            padding: 1px 8px;
+            font-weight: 600;
+        }
+        .cw-history-empty {
+            padding: 24px 16px;
+            text-align: center;
+            color: #6b7280;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
@@ -229,6 +326,13 @@
     <div class="cw-header">
         <div class="cw-title"><span class="cw-avatar">&#129302;</span>Demograpfy AI Agent</div>
         <div class="cw-actions">
+            <button id="cw-new" class="cw-new" type="button" aria-label="Start new chat" title="New chat">+</button>
+            <button id="cw-history" class="cw-history" type="button" aria-label="View past chats" title="Past chats">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <polyline points="12 7 12 12 15 14"></polyline>
+                </svg>
+            </button>
             <button id="cw-expand" class="cw-expand" type="button" aria-label="Expand chat">&#10530;</button>
             <button id="cw-close" class="cw-close" type="button" aria-label="Close chat">&#10005;</button>
         </div>
@@ -242,6 +346,15 @@
         <button id="cw-send" class="cw-send" type="button" aria-label="Send">&#10137;</button>
     </div>
     <div id="cw-limit-note" class="cw-limit-note">You&#8217;ve reached your question limit for this session.</div>
+
+    <div id="cw-history-panel" class="cw-history-panel" hidden>
+        <div class="cw-history-header">
+            <span>Past chats</span>
+            <button id="cw-history-back" class="cw-history-back" type="button" aria-label="Back to chat">&#10005;</button>
+        </div>
+        <ul id="cw-history-list" class="cw-history-list"></ul>
+        <div id="cw-history-empty" class="cw-history-empty" hidden>No past chats yet. Start one by asking a question.</div>
+    </div>
 </div>
 
 <script>
@@ -268,6 +381,12 @@
     var widget = document.getElementById("chat-widget");
     var closeBtn = document.getElementById("cw-close");
     var expandBtn = document.getElementById("cw-expand");
+    var newBtn = document.getElementById("cw-new");
+    var historyBtn = document.getElementById("cw-history");
+    var historyBackBtn = document.getElementById("cw-history-back");
+    var historyPanel = document.getElementById("cw-history-panel");
+    var historyList = document.getElementById("cw-history-list");
+    var historyEmpty = document.getElementById("cw-history-empty");
     var sendBtn = document.getElementById("cw-send");
     var input = document.getElementById("cw-input");
     var cwBody = widget.querySelector(".cw-body");
@@ -279,6 +398,9 @@
     var isOpen = false;
     var isSplit = false;
     var renderedMsgCount = 0; // count of non-thinking message nodes in thread
+    var lastThreadsKey = "";  // signature of the threads array we last rendered
+    var lastActiveThreadId = ""; // id of the thread we last reconciled to
+    var historyVisible = false;
 
     // ---- Frame size signaling ------------------------------------------------
     // Tell the parent body which mode we're in. The parent CSS resizes our
@@ -321,6 +443,7 @@
         widget.classList.remove("open");
         widget.classList.remove("split");
         fab.classList.remove("hidden");
+        if (historyVisible) hideHistoryPanel();
         broadcastMode();
     }
     function toggleSplit() {
@@ -336,6 +459,63 @@
     });
     closeBtn.addEventListener("click", closeWidget);
     expandBtn.addEventListener("click", toggleSplit);
+
+    // ---- New chat / past-chats overlay --------------------------------------
+
+    function showHistoryPanel() {
+        historyVisible = true;
+        historyPanel.hidden = false;
+    }
+    function hideHistoryPanel() {
+        historyVisible = false;
+        historyPanel.hidden = true;
+    }
+    function toggleHistoryPanel() {
+        if (historyVisible) hideHistoryPanel();
+        else showHistoryPanel();
+    }
+
+    function startNewChat() {
+        // Optimistic local reset so the UI feels instant; Python will
+        // confirm on the next render with empty messages.
+        thread.innerHTML = "";
+        renderedMsgCount = 0;
+        showWelcome();
+        hideHistoryPanel();
+        if (input) {
+            input.disabled = false;
+            input.value = "";
+            input.placeholder = "Ask about Australian suburb data...";
+        }
+        if (sendBtn) sendBtn.disabled = false;
+
+        send(SET_VALUE, {
+            value: { action: "new_chat", ts: Date.now() },
+            dataType: "json"
+        });
+        if (input && !input.disabled) {
+            setTimeout(function () { input.focus(); }, 60);
+        }
+    }
+
+    function pickThread(threadId) {
+        if (!threadId) return;
+        // Reset locally so the thread we're switching to renders cleanly
+        // when Python's next push arrives with the new messages.
+        thread.innerHTML = "";
+        renderedMsgCount = 0;
+        showWelcome();
+        hideHistoryPanel();
+
+        send(SET_VALUE, {
+            value: { action: "open_thread", thread_id: threadId, ts: Date.now() },
+            dataType: "json"
+        });
+    }
+
+    newBtn.addEventListener("click", startNewChat);
+    historyBtn.addEventListener("click", toggleHistoryPanel);
+    historyBackBtn.addEventListener("click", hideHistoryPanel);
 
     // ---- DOM helpers --------------------------------------------------------
 
@@ -370,6 +550,74 @@
         if (cwBody) cwBody.scrollTop = cwBody.scrollHeight;
     }
 
+    // ---- Past-chats list ----------------------------------------------------
+
+    function relativeTime(iso) {
+        if (!iso) return "";
+        var ts = Date.parse(iso);
+        if (isNaN(ts)) return "";
+        var diff = Math.max(0, (Date.now() - ts) / 1000);
+        if (diff < 60) return "just now";
+        if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+        if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+        if (diff < 86400 * 7) return Math.floor(diff / 86400) + "d ago";
+        try { return new Date(ts).toLocaleDateString(); }
+        catch (_e) { return ""; }
+    }
+
+    function renderThreadList(threads, activeId) {
+        threads = Array.isArray(threads) ? threads : [];
+        // Cheap signature so we don't tear down + rebuild every Streamlit
+        // render when nothing has changed.
+        var key = (activeId || "") + "|" + threads.map(function (t) {
+            return [t.thread_id, t.updated_at, t.message_count].join(":");
+        }).join(",");
+        if (key === lastThreadsKey) return;
+        lastThreadsKey = key;
+
+        historyList.innerHTML = "";
+        if (threads.length === 0) {
+            historyEmpty.hidden = false;
+            return;
+        }
+        historyEmpty.hidden = true;
+
+        threads.forEach(function (t) {
+            var li = document.createElement("li");
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "cw-history-item";
+            if (t.thread_id === activeId) {
+                btn.setAttribute("aria-current", "true");
+            }
+            btn.dataset.threadId = t.thread_id;
+
+            var title = document.createElement("div");
+            title.className = "cw-history-title";
+            title.textContent = t.title || "New chat";
+
+            var meta = document.createElement("div");
+            meta.className = "cw-history-meta";
+            var when = document.createElement("span");
+            when.textContent = relativeTime(t.updated_at);
+            var chip = document.createElement("span");
+            chip.className = "cw-history-chip";
+            var n = Number(t.message_count || 0);
+            chip.textContent = n + (n === 1 ? " msg" : " msgs");
+            meta.appendChild(when);
+            meta.appendChild(chip);
+
+            btn.appendChild(title);
+            btn.appendChild(meta);
+            btn.addEventListener("click", function () {
+                pickThread(t.thread_id);
+            });
+
+            li.appendChild(btn);
+            historyList.appendChild(li);
+        });
+    }
+
     // ---- Optimistic send ----------------------------------------------------
 
     function sendQuestion() {
@@ -394,7 +642,7 @@
         scrollBottom();
 
         send(SET_VALUE, {
-            value: { question: value, ts: ts },
+            value: { action: "question", question: value, ts: ts },
             dataType: "json"
         });
     }
@@ -413,6 +661,21 @@
         var items = (args && Array.isArray(args.messages)) ? args.messages : [];
         var pending = !!(args && args.pending);
         var limitReached = !!(args && args.limit_reached);
+        var threads = (args && Array.isArray(args.threads)) ? args.threads : [];
+        var activeId = (args && args.active_thread_id) || "";
+
+        // If the active thread changed (new chat or switched thread), wipe
+        // the DOM thread first so we never paint the old conversation
+        // briefly while the new messages are being appended.
+        if (activeId !== lastActiveThreadId) {
+            thread.innerHTML = "";
+            renderedMsgCount = 0;
+            lastActiveThreadId = activeId;
+        }
+
+        // Past-chats list (kept fresh even when the overlay isn't visible
+        // so opening it is instant).
+        renderThreadList(threads, activeId);
 
         // Input area vs limit note.
         if (limitReached) {
@@ -446,7 +709,8 @@
             }
             renderedMsgCount = items.length;
         } else if (items.length < renderedMsgCount) {
-            // History truncated externally. Rebuild from scratch.
+            // History truncated externally (e.g. switched threads or
+            // started a new chat). Rebuild from scratch.
             thread.innerHTML = "";
             items.forEach(function (m) {
                 thread.appendChild(makeMsgNode(m.role, m.content));

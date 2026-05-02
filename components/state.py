@@ -2,14 +2,23 @@
 
 Centralised so every component reads from a single, predictable shape.
 On user restore (either via ``?u=`` URL parameter or a fresh login) we
-also hydrate ``chat_messages`` from the on-disk transcript so the chat
-widget renders the prior conversation immediately.
+also hydrate the active chat thread from disk so the chat widget
+renders the prior conversation immediately.
+
+Threading model
+---------------
+``chat_thread_id`` identifies which conversation the chat widget is
+currently showing and writing to. ``hydrate_chat_history`` resolves it
+to the most recently active thread (if any) so users return to where
+they left off; otherwise it mints a fresh id without materialising a
+file - the file appears on the first ``append_message`` call.
 """
 
 import streamlit as st
 
 from auth.rbac import get_user
-from chat_history.storage import load_history
+from chat_history.storage import load_history, new_thread_id
+from chat_history.thread_list import list_threads
 
 
 SESSION_DEFAULTS = [
@@ -21,26 +30,49 @@ SESSION_DEFAULTS = [
     ("chat_pending", False),
     ("chat_pending_question", None),
     ("chat_last_ts", None),
+    ("chat_thread_id", None),
 ]
 
 
 def hydrate_chat_history(user_id: str) -> None:
-    """Populate ``st.session_state.chat_messages`` from disk for ``user_id``.
+    """Restore the most recent thread for ``user_id`` into session state.
 
-    No-op if the in-memory thread already has messages, so we don't
-    clobber the live conversation if this is called mid-session.
+    Decision tree:
+      1. If ``chat_messages`` already has content, do nothing - we don't
+         clobber a live in-memory conversation.
+      2. Otherwise look up ``list_threads`` newest-first.
+         - Thread present: set ``chat_thread_id`` to its id, populate
+           ``chat_messages`` from disk.
+         - No threads: mint a fresh ``chat_thread_id`` so the engine
+           always has a target to write to. No file is created until a
+           message is actually persisted.
     """
     if st.session_state.get("chat_messages"):
+        # Already populated; just ensure we have a thread id to write to.
+        if not st.session_state.get("chat_thread_id"):
+            st.session_state.chat_thread_id = new_thread_id()
         return
+
     try:
-        records = load_history(user_id)
+        threads = list_threads(user_id)
     except Exception:
-        records = []
-    st.session_state.chat_messages = [
-        {"role": r["role"], "content": r["content"]}
-        for r in records
-        if r.get("role") in ("user", "assistant") and isinstance(r.get("content"), str)
-    ]
+        threads = []
+
+    if threads:
+        thread_id = threads[0]["thread_id"]
+        try:
+            records = load_history(user_id, thread_id)
+        except Exception:
+            records = []
+        st.session_state.chat_thread_id = thread_id
+        st.session_state.chat_messages = [
+            {"role": r["role"], "content": r["content"]}
+            for r in records
+            if r.get("role") in ("user", "assistant") and isinstance(r.get("content"), str)
+        ]
+    else:
+        st.session_state.chat_thread_id = new_thread_id()
+        st.session_state.chat_messages = []
 
 
 def init_session_state() -> None:

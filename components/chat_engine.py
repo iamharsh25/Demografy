@@ -1,24 +1,24 @@
 """Chat lifecycle: take a user question -> run the agent -> append the reply.
 
-Owns all session-state mutations for ``chat_messages`` and mirrors every
-turn into a per-user JSONL transcript via ``chat_history.storage`` so the
-conversation survives reloads and logouts. Designed to run inside an
-``@st.fragment`` so the (potentially slow) ``ask()`` call only shows a
-fragment-scoped running indicator, not the page-wide fade overlay.
+Owns all session-state mutations for ``chat_messages`` and ``chat_thread_id``,
+and mirrors every turn into the per-thread JSONL transcript via
+``chat_history.storage`` so the conversation survives reloads, logouts, and
+thread switches. Designed to run inside an ``@st.fragment`` so the
+(potentially slow) ``ask()`` call only shows a fragment-scoped running
+indicator, not the page-wide fade overlay.
 
-Two functions form the state machine driven by ``app_v4.py``:
+The bridge between the chat widget iframe and Python is ``maybe_consume_bridge``,
+which dispatches on the payload's ``action`` field:
 
-  * ``maybe_consume_bridge`` - turns a fresh ``{question, ts}`` payload from
-    the chat widget into chat-history + pending-flag mutations. Deduped by
-    timestamp so reruns that surface the same sticky payload don't
-    double-process.
+* ``"question"`` (default) - run the agent and append its reply to the
+  active thread.
+* ``"new_chat"`` - mint a fresh ``chat_thread_id`` and clear the live
+  thread without deleting any on-disk transcripts.
+* ``"open_thread"`` - load an existing thread's history into the widget
+  so the user can continue the conversation.
 
-  * ``resolve_pending_question`` - if a pending question is stashed, calls
-    ``agent.sql_agent.ask`` synchronously with the last 5 user turns as
-    context, and appends the assistant reply to both session state and
-    the on-disk transcript. The chat widget JS shows the optimistic
-    Thinking bubble, so we don't need any extra rerun/arming step on the
-    Python side.
+Agent context (``last_n_turns``) is always scoped to ``chat_thread_id``
+so follow-ups never bleed across separate conversations.
 """
 
 from typing import Optional
@@ -30,13 +30,20 @@ from auth.rbac import (
     is_limit_reached,
     should_show_warning,
 )
-from chat_history.storage import append_message, last_n_turns
+from chat_history.storage import (
+    append_message,
+    last_n_turns,
+    load_history,
+    new_thread_id,
+)
 
 
-# Number of recent user turns (with their assistant replies) to feed back
-# into the agent as context for follow-up questions.
 HISTORY_TURNS = 5
 
+
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
 
 def _get_user_id() -> Optional[str]:
     user = st.session_state.get("user") or {}
@@ -48,25 +55,89 @@ def _get_tier() -> str:
     return user.get("tier", "free")
 
 
+def _ensure_thread_id() -> str:
+    """Return the active ``chat_thread_id``, minting one if missing."""
+    thread_id = st.session_state.get("chat_thread_id")
+    if not thread_id:
+        thread_id = new_thread_id()
+        st.session_state.chat_thread_id = thread_id
+    return thread_id
+
+
 def _append(role: str, content: str) -> None:
     st.session_state.chat_messages.append({"role": role, "content": content})
 
 
 def _persist(role: str, content: str, *, sql: Optional[str] = None) -> None:
-    """Append a message to the on-disk transcript, swallowing I/O errors.
+    """Append a message to the active thread's JSONL, swallowing I/O errors.
 
     Disk problems must never block the chat flow, so this is best-effort.
     """
     user_id = _get_user_id()
     if not user_id:
         return
+    thread_id = _ensure_thread_id()
     try:
-        append_message(user_id, role, content, sql=sql)
+        append_message(user_id, thread_id, role, content, sql=sql)
     except Exception:
-        # Intentionally silent: persistence is a nicety, not a hard
-        # requirement for the live UI.
+        # Persistence is a nicety, not a hard requirement for the live UI.
         pass
 
+
+# ---------------------------------------------------------------------------
+# Thread switching
+# ---------------------------------------------------------------------------
+
+def start_new_chat() -> None:
+    """Mint a fresh thread and clear the in-memory conversation.
+
+    The new thread file is NOT created on disk yet; it materialises on
+    the first persisted message. We also reset pending-question state so
+    a half-submitted question from the previous thread doesn't leak in.
+
+    NOTE: ``chat_last_ts`` is intentionally NOT cleared here. The bridge
+    dispatcher already sets it to the current payload's ts before
+    invoking us, and clearing it would let the same sticky payload
+    re-fire on the next Streamlit rerun.
+    """
+    st.session_state.chat_thread_id = new_thread_id()
+    st.session_state.chat_messages = []
+    st.session_state.chat_pending = False
+    st.session_state.chat_pending_question = None
+
+
+def open_thread(thread_id: str) -> None:
+    """Load ``thread_id`` into the widget so the user can continue it.
+
+    No-op for an empty id. If the thread file is missing or unreadable,
+    we still flip ``chat_thread_id`` so subsequent appends route to it
+    (effectively recreating it under the same id).
+
+    Like ``start_new_chat``, we leave ``chat_last_ts`` alone so dedupe
+    in ``maybe_consume_bridge`` keeps working across reruns.
+    """
+    if not thread_id:
+        return
+    user_id = _get_user_id()
+    records: list = []
+    if user_id:
+        try:
+            records = load_history(user_id, thread_id)
+        except Exception:
+            records = []
+    st.session_state.chat_thread_id = thread_id
+    st.session_state.chat_messages = [
+        {"role": r["role"], "content": r["content"]}
+        for r in records
+        if r.get("role") in ("user", "assistant") and isinstance(r.get("content"), str)
+    ]
+    st.session_state.chat_pending = False
+    st.session_state.chat_pending_question = None
+
+
+# ---------------------------------------------------------------------------
+# Question lifecycle
+# ---------------------------------------------------------------------------
 
 def handle_new_question(question: str) -> None:
     """Append the user message and stash the question for ``resolve``."""
@@ -106,11 +177,12 @@ def resolve_pending_question() -> None:
     # startup cost once a real question is in flight.
     from agent.sql_agent import ask
 
-    history = []
+    history: list = []
     user_id = _get_user_id()
-    if user_id:
+    thread_id = st.session_state.get("chat_thread_id")
+    if user_id and thread_id:
         try:
-            history = last_n_turns(user_id, n=HISTORY_TURNS)
+            history = last_n_turns(user_id, thread_id, n=HISTORY_TURNS)
         except Exception:
             history = []
 
@@ -141,24 +213,46 @@ def resolve_pending_question() -> None:
     st.session_state.chat_pending_question = None
 
 
-def maybe_consume_bridge(bridge_value: Optional[dict]) -> None:
-    """Forward a fresh chat-widget payload into ``handle_new_question``.
+# ---------------------------------------------------------------------------
+# Bridge dispatch
+# ---------------------------------------------------------------------------
 
-    The chat widget's component value is sticky across reruns, so we dedupe
-    by ``ts`` using ``st.session_state.chat_last_ts``. A None payload (no
-    submission yet) is a no-op.
+def maybe_consume_bridge(bridge_value: Optional[dict]) -> None:
+    """Forward a fresh chat-widget payload into the appropriate handler.
+
+    The chat widget's component value is sticky across reruns, so we
+    dedupe by ``ts`` using ``st.session_state.chat_last_ts``. Branches
+    on ``payload.action``; missing action defaults to ``"question"`` to
+    stay compatible with any older JS clients in flight.
     """
     if not bridge_value:
         return
 
     ts = bridge_value.get("ts")
-    question = bridge_value.get("question")
-    if not question or ts is None:
+    if ts is None:
         return
 
     last_ts = st.session_state.get("chat_last_ts")
     if last_ts == ts:
         return
-
     st.session_state.chat_last_ts = ts
-    handle_new_question(question)
+
+    action = bridge_value.get("action") or "question"
+
+    if action == "new_chat":
+        start_new_chat()
+        return
+
+    if action == "open_thread":
+        thread_id = bridge_value.get("thread_id")
+        if thread_id:
+            open_thread(thread_id)
+        return
+
+    if action == "question":
+        question = bridge_value.get("question")
+        if question:
+            handle_new_question(question)
+        return
+
+    # Unknown action: ignore silently rather than crash the panel.
