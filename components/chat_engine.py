@@ -64,11 +64,25 @@ def _ensure_thread_id() -> str:
     return thread_id
 
 
-def _append(role: str, content: str) -> None:
-    st.session_state.chat_messages.append({"role": role, "content": content})
+def _append(
+    role: str,
+    content: str,
+    *,
+    image_b64: Optional[str] = None,
+) -> None:
+    msg: dict = {"role": role, "content": content}
+    if image_b64:
+        msg["image_b64"] = image_b64
+    st.session_state.chat_messages.append(msg)
 
 
-def _persist(role: str, content: str, *, sql: Optional[str] = None) -> None:
+def _persist(
+    role: str,
+    content: str,
+    *,
+    sql: Optional[str] = None,
+    image_b64: Optional[str] = None,
+) -> None:
     """Append a message to the active thread's JSONL, swallowing I/O errors.
 
     Disk problems must never block the chat flow, so this is best-effort.
@@ -78,7 +92,14 @@ def _persist(role: str, content: str, *, sql: Optional[str] = None) -> None:
         return
     thread_id = _ensure_thread_id()
     try:
-        append_message(user_id, thread_id, role, content, sql=sql)
+        append_message(
+            user_id,
+            thread_id,
+            role,
+            content,
+            sql=sql,
+            image_b64=image_b64,
+        )
     except Exception:
         # Persistence is a nicety, not a hard requirement for the live UI.
         pass
@@ -105,6 +126,7 @@ def start_new_chat() -> None:
     st.session_state.chat_pending = False
     st.session_state.chat_pending_question = None
     st.session_state.chat_suggestions = []
+    st.session_state.chat_last_query = None
 
 
 def open_thread(thread_id: str) -> None:
@@ -128,13 +150,22 @@ def open_thread(thread_id: str) -> None:
             records = []
     st.session_state.chat_thread_id = thread_id
     st.session_state.chat_messages = [
-        {"role": r["role"], "content": r["content"]}
+        {
+            "role": r["role"],
+            "content": r["content"],
+            **(
+                {"image_b64": r["image_b64"]}
+                if r.get("image_b64") and isinstance(r.get("image_b64"), str)
+                else {}
+            ),
+        }
         for r in records
         if r.get("role") in ("user", "assistant") and isinstance(r.get("content"), str)
     ]
     st.session_state.chat_pending = False
     st.session_state.chat_pending_question = None
     st.session_state.chat_suggestions = []
+    st.session_state.chat_last_query = None
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +185,7 @@ def handle_new_question(question: str) -> None:
     # something else (typed or chip-clicked). Prevents the old suggestions
     # from briefly hanging under the new bubble while the agent thinks.
     st.session_state.chat_suggestions = []
+    st.session_state.chat_last_query = None
 
     _append("user", question)
     _persist("user", question)
@@ -182,7 +214,7 @@ def resolve_pending_question() -> None:
 
     # Defer the import so we only pay LangChain / google-genai / BigQuery
     # startup cost once a real question is in flight.
-    from agent.sql_agent import ask
+    from agent.sql_agent import USER_FACING_UNANSWERABLE_REPLY, ask
 
     history: list = []
     user_id = _get_user_id()
@@ -194,28 +226,50 @@ def resolve_pending_question() -> None:
             history = []
 
     sql_query: Optional[str] = None
+    template_meta: Optional[dict] = None
     try:
-        answer, sql_query = ask(question, history=history)
-    except Exception as exc:
-        answer = f"Sorry, I hit an error answering that. ({exc})"
+        answer, sql_query, template_meta = ask(question, history=history)
+    except Exception:
+        # Hide the raw exception from the user; recovery chips will offer
+        # alternative on-topic questions based on the prior thread.
+        answer = USER_FACING_UNANSWERABLE_REPLY
 
-    final_answer = answer or "Sorry, I could not format an answer for that query."
+    final_answer = answer or USER_FACING_UNANSWERABLE_REPLY
     _append("assistant", final_answer)
     _persist("assistant", final_answer, sql=sql_query)
+
+    try:
+        from agent.chart_renderer import is_chartable
+
+        if template_meta and is_chartable(
+            str(template_meta.get("intent") or ""),
+            template_meta.get("rows"),
+        ):
+            st.session_state.chat_last_query = template_meta
+        else:
+            st.session_state.chat_last_query = None
+    except Exception:
+        st.session_state.chat_last_query = None
 
     # Best-effort chip generation. Failure (no API key, slow network,
     # timeout, garbage output) leaves chips empty - the chat itself is
     # already complete by this point.
-    try:
-        from agent.suggestions import generate_suggestions
-
-        st.session_state.chat_suggestions = generate_suggestions(
-            question=question,
-            answer=final_answer,
-            history=history,
+    if template_meta and template_meta.get("clarification"):
+        st.session_state.chat_suggestions = list(
+            template_meta.get("clarification_chips") or []
         )
-    except Exception:
-        st.session_state.chat_suggestions = []
+    else:
+        try:
+            from agent.suggestions import generate_suggestions
+
+            st.session_state.chat_suggestions = generate_suggestions(
+                question=question,
+                answer=final_answer,
+                history=history,
+                chart_meta=st.session_state.get("chat_last_query"),
+            )
+        except Exception:
+            st.session_state.chat_suggestions = []
 
     tier = _get_tier()
     question_count = int(st.session_state.get("question_count", 0)) + 1
@@ -232,6 +286,38 @@ def resolve_pending_question() -> None:
 
     st.session_state.chat_pending = False
     st.session_state.chat_pending_question = None
+
+
+def handle_chart_request() -> None:
+    """Render the last chartable templated result as an inline image bubble."""
+    from agent.chart_renderer import build_chart_png_b64, is_chartable
+
+    meta = st.session_state.get("chat_last_query")
+    if not meta or not is_chartable(
+        str(meta.get("intent") or ""),
+        meta.get("rows"),
+    ):
+        return
+
+    built = build_chart_png_b64(
+        str(meta.get("intent") or ""),
+        list(meta.get("rows") or []),
+        str(meta.get("question") or ""),
+    )
+    if not built:
+        return
+
+    title, png_b64 = built
+    caption = (title or "Chart").strip() or "Chart"
+    _append("assistant", caption, image_b64=png_b64)
+    _persist(
+        "assistant",
+        caption,
+        sql=meta.get("sql") if isinstance(meta.get("sql"), str) else None,
+        image_b64=png_b64,
+    )
+    st.session_state.chat_last_query = None
+    st.session_state.chat_suggestions = []
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +354,10 @@ def maybe_consume_bridge(bridge_value: Optional[dict]) -> None:
         thread_id = bridge_value.get("thread_id")
         if thread_id:
             open_thread(thread_id)
+        return
+
+    if action == "chart":
+        handle_chart_request()
         return
 
     if action == "question":

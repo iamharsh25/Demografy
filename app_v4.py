@@ -8,6 +8,14 @@ of the page.
 Run via: ``streamlit run app.py``.
 """
 
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Ensure ``.env`` is loaded from this repo's root for Streamlit, LangSmith,
+# and credentials even if the shell cwd is a parent folder.
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 import streamlit as st
 
 from auth.rbac import is_limit_reached

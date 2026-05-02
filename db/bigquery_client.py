@@ -8,13 +8,14 @@ What this file does:
 """
 
 import os
+from pathlib import Path
+
+import pandas as pd
+from dotenv import load_dotenv
 from google.cloud import bigquery
 from google.oauth2 import service_account
-from dotenv import load_dotenv
-import pandas as pd
 
-# Load all variables from the .env file into the environment
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 def get_client() -> bigquery.Client:

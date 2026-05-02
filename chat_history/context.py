@@ -23,6 +23,9 @@ _HEADER = "Previous conversation (most recent last):\n"
 def _format_turn(record: dict) -> str:
     role = record.get("role", "")
     content = (record.get("content") or "").strip()
+    # Never embed chart image payloads into the SQL agent context.
+    if record.get("image_b64") and not content:
+        content = "[Chart]"
     if not content:
         return ""
     label = "User" if role == "user" else "Assistant"

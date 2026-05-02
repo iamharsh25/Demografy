@@ -74,9 +74,16 @@ This document describes what each important file and folder in the Demografy rep
 
 | Path | Role |
 |------|------|
-| `eval/golden_dataset.json` | Reference Q&A pairs for automated evaluation. |
-| `eval/run_eval.py` | Runs evaluation passes against the agent. |
-| `eval/judge.py` | LLM-as-judge scoring for eval outputs. |
+| `eval/golden_dataset.json` | Reference Q&A pairs (`id`, `question`, `expected_sql_pattern`, `validation`) for `run_eval.py`. |
+| `eval/run_eval.py` | Runs each golden item through `ask()`, pattern-checks SQL, scores with `judge.py`, writes `eval/results.json`. Run: `python eval/run_eval.py` from repo root (script fixes `PYTHONPATH`). |
+| `eval/judge.py` | LLM-as-judge scoring for single-turn eval outputs (Gemini). |
+| `eval/conversation_stress_dataset.json` | Multi-turn scenarios for the conversational stress eval (state swap, metric switch, limit swap, drill-down, edge cases). |
+| `eval/run_conversation_eval.py` | Internal QA: drives each scenario through `ask` + `generate_suggestions`, runs rule checks (no SQL / `kpi_*` leak, chip shape), then scores the whole transcript with `conversation_judge.py`. Writes `eval/conversation_results.json`. |
+| `eval/conversation_judge.py` | LLM judge for whole multi-turn transcripts (1-5 + reasoning). |
+| `eval/verify_langsmith.py` | Lists recent LangSmith runs for `LANGCHAIN_PROJECT`; optional `--smoke` to call `ask()` once. Confirms tracing + API key. |
+| `eval/langsmith_account_check.py` | Prints workspace name/ID and a direct browser URL for `LANGCHAIN_PROJECT` so the UI matches the API key (fixes “0 traces” in the wrong workspace). |
+| `eval/results.json` | Generated report from the last single-turn eval (gitignored if added). |
+| `eval/conversation_results.json` | Generated report from the last conversation stress eval. |
 
 ---
 

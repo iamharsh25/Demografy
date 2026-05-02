@@ -10,7 +10,7 @@ Communication contract
 ----------------------
 Python -> JS (component args, pushed every Streamlit render):
 
-    messages          list[{"role", "content"}]   active thread bubbles
+    messages          list[{"role", "content", "image_b64"?}]   thread bubbles
     pending           bool                        Thinking spinner on?
     limit_reached     bool                        hide input when True
     threads           list[{"thread_id", ...}]    newest-first list for
@@ -28,9 +28,11 @@ JS -> Python (one of three sticky payload shapes via setComponentValue):
     { "action": "question",     "question": str,    "ts": int }
     { "action": "new_chat",                           "ts": int }
     { "action": "open_thread",  "thread_id": str,   "ts": int }
+    { "action": "chart",                              "ts": int }
 
-Chip clicks reuse the ``"question"`` action with the chip text as the
-``question`` value, so the engine path is identical to the typed flow.
+Follow-up chips use ``"question"`` except the chart chip, which sends
+``"chart"`` so the server can render the last chartable result without
+re-querying.
 
 ``maybe_consume_bridge`` in ``chat_engine.py`` dedupes on ``ts`` and
 dispatches on ``action``.

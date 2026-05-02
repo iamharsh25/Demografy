@@ -32,6 +32,7 @@ SESSION_DEFAULTS = [
     ("chat_last_ts", None),
     ("chat_thread_id", None),
     ("chat_suggestions", []),
+    ("chat_last_query", None),
 ]
 
 
@@ -67,7 +68,15 @@ def hydrate_chat_history(user_id: str) -> None:
             records = []
         st.session_state.chat_thread_id = thread_id
         st.session_state.chat_messages = [
-            {"role": r["role"], "content": r["content"]}
+            {
+                "role": r["role"],
+                "content": r["content"],
+                **(
+                    {"image_b64": r["image_b64"]}
+                    if r.get("image_b64") and isinstance(r.get("image_b64"), str)
+                    else {}
+                ),
+            }
             for r in records
             if r.get("role") in ("user", "assistant") and isinstance(r.get("content"), str)
         ]
@@ -78,6 +87,7 @@ def hydrate_chat_history(user_id: str) -> None:
     # Suggestions are ephemeral; never restore stale chips from a prior
     # session. They only appear after a fresh answer this session.
     st.session_state.chat_suggestions = []
+    st.session_state.chat_last_query = None
 
 
 def init_session_state() -> None:

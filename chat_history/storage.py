@@ -21,7 +21,8 @@ Record shape per JSONL line::
     {"ts": "2026-05-02T01:39:18+00:00",
      "role": "user" | "assistant",
      "content": "...",
-     "sql": "SELECT ..." | null}
+     "sql": "SELECT ..." | null,
+     "image_b64": "<png base64>" | null}
 
 JSONL is preferred over a single JSON array so appends are crash-safe
 (we never rewrite earlier turns) and so it's trivial to migrate to a
@@ -173,6 +174,11 @@ def load_history(user_id: str, thread_id: str) -> List[dict]:
                 content = record.get("content")
                 if role not in ("user", "assistant") or not isinstance(content, str):
                     continue
+                # Normalise optional image payload (large; keep as-is for UI hydrate).
+                if record.get("image_b64") is not None and not isinstance(
+                    record.get("image_b64"), str
+                ):
+                    record = {**record, "image_b64": None}
                 out.append(record)
     except OSError:
         return []
@@ -186,6 +192,7 @@ def append_message(
     content: str,
     *,
     sql: Optional[str] = None,
+    image_b64: Optional[str] = None,
     ts: Optional[str] = None,
 ) -> None:
     """Append one message record to ``thread_id``'s transcript file.
@@ -206,6 +213,7 @@ def append_message(
         "role": role,
         "content": content,
         "sql": sql,
+        "image_b64": image_b64,
     }
 
     _ensure_user_dir(user_id)

@@ -5,14 +5,28 @@ LangChain SQL Agent for Demografy Insights Chatbot.
 
 import os
 import re
+from pathlib import Path
+
 from dotenv import load_dotenv
+
+# Load ``.env`` from the Demografy repo root *before* importing LangChain so
+# ``LANGCHAIN_TRACING_V2`` / ``LANGCHAIN_API_KEY`` / ``LANGCHAIN_PROJECT``
+# are visible when tracing initialises. Using an explicit path also works
+# when Streamlit is started from a parent directory (cwd would miss ``.env``).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain_google_genai import ChatGoogleGenerativeAI
 from agent.prompts import FEW_SHOT_PREFIX
 
-# Load environment variables from .env file
-load_dotenv()
+# Single source of truth for the "I cannot help with this" copy. Used as the
+# empty-answer fallback in ``ask()`` and matched in ``agent.suggestions`` to
+# trigger the AI-powered recovery chip prompt.
+USER_FACING_UNANSWERABLE_REPLY = (
+    "Sorry, I cannot answer this question. I do not have information for that. "
+    "Could you try asking another question?"
+)
 
 # Module-level agent instance (created once, reused for all questions)
 _agent = None
@@ -52,6 +66,31 @@ STATE_ALIASES = {
     "victoria": "Victoria",
     "wa": "Western Australia",
     "western australia": "Western Australia",
+}
+
+# Major cities / city phrases → state (follow-ups like "Brisbane", or "in Melbourne" in one line).
+# Keys are lowercase phrases matching _normalise_question output.
+MAJOR_CITY_TO_STATE: dict[str, str] = {
+    "sydney": "New South Wales",
+    "newcastle": "New South Wales",
+    "wollongong": "New South Wales",
+    "melbourne": "Victoria",
+    "geelong": "Victoria",
+    "ballarat": "Victoria",
+    "bendigo": "Victoria",
+    "brisbane": "Queensland",
+    "gold coast": "Queensland",
+    "sunshine coast": "Queensland",
+    "townsville": "Queensland",
+    "cairns": "Queensland",
+    "toowoomba": "Queensland",
+    "adelaide": "South Australia",
+    "perth": "Western Australia",
+    "fremantle": "Western Australia",
+    "hobart": "Tasmania",
+    "launceston": "Tasmania",
+    "canberra": "Australian Capital Territory",
+    "darwin": "Northern Territory",
 }
 
 RANKABLE_METRICS = [
@@ -131,7 +170,83 @@ def _extract_state(text: str) -> str | None:
     for alias, state in sorted(STATE_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
         if re.search(rf"\b{re.escape(alias)}\b", text):
             return state
+    # Major cities imply a state (e.g. "diverse suburbs in Brisbane").
+    for city, state in sorted(MAJOR_CITY_TO_STATE.items(), key=lambda item: len(item[0]), reverse=True):
+        parts = city.split()
+        if len(parts) == 1:
+            pat = rf"\b{re.escape(parts[0])}\b"
+        else:
+            pat = r"\s+".join(rf"\b{re.escape(p)}\b" for p in parts)
+        if re.search(pat, text):
+            return state
     return None
+
+
+# Shown when a diversity suburb ranking needs a state or city; user can tap or type (e.g. Melbourne).
+GEOGRAPHY_CLARIFICATION_CHIPS: tuple[str, ...] = (
+    "Victoria",
+    "New South Wales",
+    "Queensland",
+)
+
+
+def _wants_national_scope(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "australia",
+            "australian",
+            "nationwide",
+            "national",
+            "all states",
+            "every state",
+            "each state",
+            "across australia",
+            "across the country",
+            "whole country",
+            "country wide",
+            "countrywide",
+        )
+    )
+
+
+def _diversity_suburb_list_intent(text: str) -> bool:
+    """User wants a list/ranking of diverse suburbs (or areas), not e.g. a single % only."""
+    if not ("diversity" in text or "diverse" in text):
+        return False
+    wants_ranked_list = any(
+        w in text
+        for w in (
+            "top",
+            "highest",
+            "most",
+            "rank",
+            "show",
+            "find",
+            "give",
+            "list",
+            "tell",
+        )
+    )
+    mentions_suburb = any(w in text for w in ("suburb", "suburbs", "area", "areas", "sa2"))
+    return wants_ranked_list or mentions_suburb
+
+
+def _needs_diversity_geography_clarification(question: str) -> bool:
+    """True when the user wants diverse-suburb rankings but gave no state/city."""
+    text = _normalise_question(question)
+    if _extract_state(text):
+        return False
+    if _wants_national_scope(text):
+        return False
+    return _diversity_suburb_list_intent(text)
+
+
+def _geography_clarification_meta() -> dict:
+    return {
+        "clarification": True,
+        "clarification_chips": list(GEOGRAPHY_CLARIFICATION_CHIPS),
+    }
 
 
 def _residential_filters(include_statistical_categories: bool = True) -> list[str]:
@@ -184,19 +299,27 @@ WHERE {_where_clause(filters)}
 LIMIT 1;"""
         return "diversity_percentage", sql
 
-    if is_diversity_question and state and any(word in text for word in ("top", "highest", "most")):
+    if is_diversity_question and _diversity_suburb_list_intent(text):
         limit = _extract_limit(text, 3)
-        filters = [
-            f"state = '{state}'",
-            "kpi_2_val IS NOT NULL",
-            *_residential_filters(),
-        ]
-        sql = f"""SELECT sa2_name, state, kpi_2_val AS diversity_index
+        filters: list[str] | None
+        if state:
+            filters = [
+                f"state = '{state}'",
+                "kpi_2_val IS NOT NULL",
+                *_residential_filters(),
+            ]
+        elif _wants_national_scope(text):
+            filters = ["kpi_2_val IS NOT NULL", *_residential_filters()]
+        else:
+            # No state/city and not explicitly Australia-wide: ask() asks for geography.
+            filters = None
+        if filters is not None:
+            sql = f"""SELECT sa2_name, state, kpi_2_val AS diversity_index
 FROM `demografy.prod_tables.a_master_view`
 WHERE {_where_clause(filters)}
 ORDER BY kpi_2_val DESC
 LIMIT {limit};"""
-        return "ranked_metric", sql
+            return "ranked_metric", sql
 
     if "average" in text and "prosperity" in text and state:
         sql = f"""SELECT ROUND(AVG(kpi_1_val), 2) AS avg_prosperity_score
@@ -476,52 +599,138 @@ def _fmt_number(value, suffix: str = "") -> str:
     return f"{text}{suffix}"
 
 
-def _format_template_answer(intent: str, rows: list) -> str:
-    if not rows:
-        if intent == "young_family_learning":
-            return "No suburbs match both criteria."
-        return "No matching rows found."
+def _geo_phrase(state: str | None) -> str:
+    return f" in {state}" if state else ""
+
+
+def _template_lead_in(intent: str, rows: list, question: str, state: str | None) -> str:
+    """One-sentence opener naming metric and geography (user-facing only)."""
+    q = (question or "").lower()
+    geo = _geo_phrase(state)
+    n = len(rows) if rows else _extract_limit(_normalise_question(question), 3)
 
     if intent == "single_scalar":
-        return _fmt_number(rows[0][0])
+        if "prosperity" in q:
+            return f"Average prosperity score{geo}:"
+        return f"Result for your query{geo}:"
 
     if intent == "single_name":
-        return str(rows[0][0])
+        return "The top state for this measure is:"
 
     if intent == "diversity_percentage":
-        return _fmt_number(rows[0][0], "%")
+        return f"Share of suburbs with high diversity{geo}:"
 
     if intent == "state_comparison":
-        return "\n".join(
+        return "Home ownership and rental access by state:"
+
+    if intent == "young_family_learning":
+        return f"Suburbs with strong young family presence and learning level{geo}:"
+
+    if intent == "rental_access":
+        return f"Most affordable rental access suburbs{geo}:"
+
+    if intent == "ranked_metric":
+        if "diversity" in q or "diverse" in q:
+            return f"Here are the top {n} most diverse suburbs{geo}:"
+        if "prosperity" in q:
+            return f"Here are the top {n} suburbs by prosperity score{geo}:"
+        return f"Here are the top {n} ranked results{geo}:"
+
+    if intent == "ranked_percent":
+        if "migration" in q:
+            return f"Here are the top {n} suburbs by migration footprint{geo}:"
+        if "learning" in q or "education" in q:
+            return f"Here are the top {n} suburbs by learning level{geo}:"
+        if "social housing" in q:
+            return f"Suburbs with the highest social housing share{geo}:"
+        if "young family" in q or "families" in q:
+            return f"Suburbs with the highest young family presence{geo}:"
+        if "home ownership" in q or "resident equity" in q:
+            return f"Suburbs by home ownership{geo}:"
+        if "resident anchor" in q or "stable" in q or "stability" in q:
+            return f"Most stable suburbs by resident anchor{geo}:"
+        return f"Here are the top {n} results{geo}:"
+
+    return f"Results for your question{geo}:"
+
+
+def _format_template_answer(
+    intent: str,
+    rows: list,
+    *,
+    question: str,
+    state: str | None,
+) -> str:
+    lead = _template_lead_in(intent, rows, question, state)
+
+    if not rows:
+        if intent == "young_family_learning":
+            body = "No suburbs match both criteria."
+        else:
+            body = "No matching suburbs found for this query."
+        return f"{lead}\n\n{body}"
+
+    if intent == "single_scalar":
+        body = _fmt_number(rows[0][0])
+        return f"{lead}\n\n{body}"
+
+    if intent == "single_name":
+        body = str(rows[0][0])
+        return f"{lead}\n\n{body}"
+
+    if intent == "diversity_percentage":
+        body = _fmt_number(rows[0][0], "%")
+        return f"{lead}\n\n{body}"
+
+    if intent == "state_comparison":
+        body = "\n".join(
             f"{i}. {row[0]}: home ownership {_fmt_number(row[1], '%')}, rental access {_fmt_number(row[2], '%')}"
             for i, row in enumerate(rows, start=1)
         )
+        return f"{lead}\n\n{body}"
 
     if intent == "young_family_learning":
-        return "\n".join(
+        body = "\n".join(
             f"{i}. {row[0]}: young family {_fmt_number(row[2], '%')}, learning level {_fmt_number(row[3], '%')}"
             for i, row in enumerate(rows, start=1)
         )
+        return f"{lead}\n\n{body}"
 
     value_index = 3 if intent == "rental_access" else 2
     suffix = "" if intent == "ranked_metric" else "%"
 
-    return "\n".join(
+    body = "\n".join(
         f"{i}. {row[0]}: {_fmt_number(row[value_index], suffix)}"
         for i, row in enumerate(rows, start=1)
     )
+    return f"{lead}\n\n{body}"
 
 
-def _answer_template_question(question: str) -> tuple[str, str] | None:
+def _template_meta(intent: str, sql: str, rows: list, question: str, state: str | None) -> dict:
+    """Serializable-ish dict for charting and session cache (rows are tuples)."""
+    return {
+        "intent": intent,
+        "sql": sql,
+        "rows": rows,
+        "question": question,
+        "state": state,
+    }
+
+
+def _answer_template_question(question: str) -> tuple[str, str, dict] | None:
     template = _template_sql_for_question(question)
     if not template:
         return None
 
     intent, sql = template
+    text_norm = _normalise_question(question)
+    state = _extract_state(text_norm)
     from db.bigquery_client import run_query
 
     rows = _rows_from_dataframe(run_query(sql))
-    return _format_template_answer(intent, rows), sql
+    answer = _format_template_answer(intent, rows, question=question, state=state)
+    meta = _template_meta(intent, sql, rows, question, state)
+    return answer, sql, meta
 
 
 # Words that commonly wrap a state in a follow-up question and should be
@@ -534,12 +743,12 @@ _FOLLOWUP_FILLERS = frozenset({
 
 
 def _detect_state_only_followup(text: str) -> str | None:
-    """Return the canonical state name if ``text`` is essentially a state.
+    """Return the canonical Australian state/territory if ``text`` is only geography.
 
-    Matches things like "what about NSW?", "and Queensland?", "now in Tas",
-    "for the NT?", "Western Australia". Returns None for anything that
-    carries its own intent (metric, top-N, comparison, etc.) so we don't
-    accidentally short-circuit a real new question.
+    Matches state names and aliases ("NSW", "Queensland", "Tas") and short
+    major-city picks ("Brisbane", "Melbourne") that imply a single state.
+    Returns None when the line looks like a full question (many tokens) so we
+    do not short-circuit real queries.
     """
     if not text:
         return None
@@ -551,13 +760,16 @@ def _detect_state_only_followup(text: str) -> str | None:
     if not tokens:
         return None
     residue = " ".join(tokens).strip()
-    return STATE_ALIASES.get(residue)
+    st = STATE_ALIASES.get(residue)
+    if st:
+        return st
+    return MAJOR_CITY_TO_STATE.get(residue)
 
 
 def _template_followup_answer(
     history: list[dict] | None,
     new_state: str,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, dict] | None:
     """Reuse a prior templatable user turn with the state swapped.
 
     Walks history newest-to-oldest; for each user turn we either swap the
@@ -574,6 +786,10 @@ def _template_followup_answer(
             continue
         prev = (turn.get("content") or "").strip()
         if not prev:
+            continue
+        # Skip lines that are only a state or city follow-up (e.g. "Brisbane",
+        # "Queensland"); the substantive question is further back in history.
+        if _detect_state_only_followup(prev) is not None:
             continue
 
         rewritten = prev
@@ -617,7 +833,7 @@ def ask(
     question: str,
     callbacks=None,
     history: list[dict] | None = None,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, dict | None]:
     """Answer a user question, optionally using prior chat history for context.
 
     ``history`` is a list of ``{"role": "user"|"assistant", "content": str}``
@@ -625,12 +841,18 @@ def ask(
     prepended to the agent input so follow-ups like "diversity" can resolve
     against the previous turn. Template fast-path answers ignore history
     since they're keyword-matched and don't benefit from context.
+
+    Returns ``(answer, sql, meta)``. ``meta`` is set for templated answers
+    (intent, rows, question, state) for charting; may include
+    ``clarification`` + ``clarification_chips`` when geography is required;
+    ``None`` for LLM answers.
     """
     global _agent
 
     template_answer = _answer_template_question(question)
     if template_answer:
-        return template_answer
+        ans, sql, meta = template_answer
+        return ans, sql, meta
 
     # Deterministic state-swap follow-up: "what about NSW?", "and Queensland?",
     # etc. We rewrite the most recent templatable user turn with the new state
@@ -640,7 +862,15 @@ def ask(
     if new_state and history:
         followup = _template_followup_answer(history, new_state)
         if followup:
-            return followup
+            ans, sql, meta = followup
+            return ans, sql, meta
+
+    if _needs_diversity_geography_clarification(question):
+        clarify = (
+            "I can list the most diverse suburbs, but I need a state or city to narrow the results. "
+            "Pick one of the suggestions below, or type a place name (for example Melbourne or NSW)."
+        )
+        return clarify, None, _geography_clarification_meta()
 
     if _agent is None:
         _agent = _create_agent()
@@ -680,5 +910,5 @@ def ask(
     answer = (result.get("output") or "").strip()
     answer = _strip_sql_from_answer(answer)
     if not answer:
-        answer = "Sorry, I could not format an answer for that query. Please try again."
-    return answer, sql_query
+        answer = USER_FACING_UNANSWERABLE_REPLY
+    return answer, sql_query, None

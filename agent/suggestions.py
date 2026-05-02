@@ -25,8 +25,13 @@ from typing import List, Optional
 
 
 CHIP_TIMEOUT = 2.5  # seconds; budget for the Gemini call before we give up
+RECOVERY_CHIP_TIMEOUT = 4.0  # user is already on the failure screen; small extra wait is acceptable
+RECOVERY_HISTORY_TURNS = 10  # widen the window so recovery suggestions have more topic context
 MAX_CHIPS = 3
+MAX_CHIPS_WITH_CHART = 4  # "Show as a chart?" plus up to three LLM chips
 MAX_WORDS = 12
+
+CHART_CHIP_LABEL = "Show as a chart?"
 
 _FORBIDDEN_TOKENS = (
     "kpi_",
@@ -97,7 +102,8 @@ South Australia, Western Australia, Tasmania, ACT, Northern Territory),
 suburbs (SA2), regions.
 
 OUTPUT RULES (mandatory):
-- Output exactly THREE follow-up questions, one per line.
+- Output exactly THREE follow-up questions, one per line (the app may add one
+  extra non-question control chip separately; your lines must all be questions).
 - Each question is at most 12 words and ends with "?".
 - No numbering, no bullets, no quotes, no preamble, no markdown.
 - Plain English only. NEVER mention SQL, column names (like kpi_*),
@@ -106,6 +112,33 @@ OUTPUT RULES (mandatory):
   previous question. Vary the dimension you change (state, metric,
   limit, comparison) instead of repeating the same shape.
 - Stay relevant to the previous question and answer.
+"""
+
+
+_RECOVERY_SYSTEM_PROMPT = """The Demografy assistant could not answer the
+user's last question. Suggest THREE short follow-up questions about
+Australian SA2-level demographic data the user could ask instead. Use
+the prior conversation in this thread to stay on the user's topic
+(metric, geography, comparison they were exploring) and only deviate
+when the prior topic is exhausted.
+
+Available metrics (use natural-language names only):
+prosperity score, diversity index, migration footprint, learning level,
+social housing, rental access, home ownership, resident anchor, young
+family presence.
+
+Geographic dimensions: states (Victoria, New South Wales, Queensland,
+South Australia, Western Australia, Tasmania, ACT, Northern Territory),
+suburbs (SA2), regions.
+
+OUTPUT RULES (mandatory):
+- Output exactly THREE questions, one per line.
+- At most 12 words each, ending with "?".
+- No numbering, bullets, quotes, preamble, markdown.
+- Plain English; never mention SQL, columns (kpi_*), tables, or backticks.
+- Each question must be distinct and clearly different in shape from the
+  user's last question (vary metric, geography, limit, or comparison).
+- Do not repeat the user's failed question verbatim.
 """
 
 
@@ -129,14 +162,46 @@ def _build_user_prompt(question: str, answer: str, history: Optional[list]) -> s
     return "\n\n".join(parts)
 
 
-def _invoke_llm(prompt: str) -> str:
+def _build_recovery_prompt(question: str, history: Optional[list]) -> str:
+    """Wider-context prompt for the unanswerable case.
+
+    The assistant has just told the user it cannot help. We give the model
+    a longer view of the same thread (up to ``RECOVERY_HISTORY_TURNS``
+    turns) so its three suggestions can carry forward the metric/geography
+    the user was exploring instead of starting from scratch.
+    """
+    parts: list[str] = [
+        "The assistant could not answer the user's last question. "
+        "Use the prior conversation below to recover and propose alternative "
+        "on-topic questions the user can ask next."
+    ]
+    if history:
+        recent = list(history)[-RECOVERY_HISTORY_TURNS:]
+        rendered: list[str] = []
+        for turn in recent:
+            role = turn.get("role")
+            content = (turn.get("content") or "").strip()
+            if not content or role not in ("user", "assistant"):
+                continue
+            label = "User" if role == "user" else "Assistant"
+            rendered.append(f"{label}: {content}")
+        if rendered:
+            parts.append("Conversation so far:\n" + "\n".join(rendered))
+    parts.append(f"Last user question (failed): {question.strip()}")
+    parts.append(
+        "Suggest three on-topic follow-up questions the user could try instead."
+    )
+    return "\n\n".join(parts)
+
+
+def _invoke_llm(prompt: str, *, system_prompt: str = _SYSTEM_PROMPT) -> str:
     llm = _get_llm()
     if llm is None:
         return ""
     try:
         result = llm.invoke(
             [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ]
         )
@@ -182,13 +247,19 @@ def _too_similar(chip: str, reference: str, threshold: float = 0.8) -> bool:
     return overlap >= threshold
 
 
-def parse_suggestions(text: str, *, prev_question: str = "") -> List[str]:
-    """Parse raw LLM output into a clean, deduped list of <= 3 chips."""
+def parse_suggestions(
+    text: str,
+    *,
+    prev_question: str = "",
+    max_chips: int = MAX_CHIPS,
+) -> List[str]:
+    """Parse raw LLM output into a clean, deduped list of chips (cap ``max_chips``)."""
     if not text:
         return []
 
     from agent.sql_agent import _strip_sql_from_answer
 
+    cap = max(1, min(max_chips, MAX_CHIPS_WITH_CHART))
     seen: set[str] = set()
     chips: list[str] = []
     for raw_line in text.splitlines():
@@ -201,9 +272,11 @@ def parse_suggestions(text: str, *, prev_question: str = "") -> List[str]:
             continue
         if prev_question and _too_similar(chip, prev_question):
             continue
+        if chip.lower() == CHART_CHIP_LABEL.lower():
+            continue
         seen.add(key)
         chips.append(chip)
-        if len(chips) >= MAX_CHIPS:
+        if len(chips) >= cap:
             break
     return chips
 
@@ -212,8 +285,17 @@ def generate_suggestions(
     question: str,
     answer: str,
     history: Optional[list] = None,
+    chart_meta: Optional[dict] = None,
 ) -> List[str]:
-    """Return up to ``MAX_CHIPS`` follow-up question strings, or ``[]``.
+    """Return follow-up chips (up to 3, or 4 when a chart chip is prepended).
+
+    When ``chart_meta`` matches a chartable templated result, the first chip is
+    ``CHART_CHIP_LABEL``; the client sends a chart bridge action when it is
+    clicked instead of posting the text as a question.
+
+    When ``answer`` is the user-facing "I cannot answer" reply, switch to the
+    recovery prompt so chips are AI-generated alternatives grounded in the
+    same thread; we never substitute a hardcoded list.
 
     Best-effort: any error (no API key, network failure, timeout, garbage
     output) returns an empty list so the chat experience is unchanged.
@@ -221,14 +303,38 @@ def generate_suggestions(
     if not (question or "").strip() or not (answer or "").strip():
         return []
 
-    prompt = _build_user_prompt(question, answer, history)
+    from agent.chart_renderer import is_chartable
+    from agent.sql_agent import USER_FACING_UNANSWERABLE_REPLY
+
+    is_recovery = (answer or "").strip() == USER_FACING_UNANSWERABLE_REPLY.strip()
+
+    prepend_chart = False
+    if not is_recovery and chart_meta and is_chartable(
+        str(chart_meta.get("intent") or ""),
+        chart_meta.get("rows"),
+    ):
+        prepend_chart = True
+
+    llm_cap = MAX_CHIPS_WITH_CHART - 1 if prepend_chart else MAX_CHIPS
+
+    if is_recovery:
+        prompt = _build_recovery_prompt(question, history)
+        system_prompt = _RECOVERY_SYSTEM_PROMPT
+        timeout = RECOVERY_CHIP_TIMEOUT
+    else:
+        prompt = _build_user_prompt(question, answer, history)
+        system_prompt = _SYSTEM_PROMPT
+        timeout = CHIP_TIMEOUT
 
     try:
-        future = _executor.submit(_invoke_llm, prompt)
-        raw = future.result(timeout=CHIP_TIMEOUT)
+        future = _executor.submit(_invoke_llm, prompt, system_prompt=system_prompt)
+        raw = future.result(timeout=timeout)
     except FutureTimeout:
         return []
     except Exception:
         return []
 
-    return parse_suggestions(raw, prev_question=question)
+    llm_chips = parse_suggestions(raw, prev_question=question, max_chips=llm_cap)
+    if prepend_chart:
+        return [CHART_CHIP_LABEL] + llm_chips
+    return llm_chips

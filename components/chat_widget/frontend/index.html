@@ -158,6 +158,17 @@
             color: #272d2d;
             border-bottom-left-radius: 4px;
         }
+        .cw-msg img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 8px;
+            margin-top: 6px;
+        }
+        .cw-msg .cw-msg-text {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
         .cw-msg.thinking {
             align-self: flex-start;
             background: #ede2ff;
@@ -427,6 +438,7 @@
     var lastThreadsKey = "";  // signature of the threads array we last rendered
     var lastActiveThreadId = ""; // id of the thread we last reconciled to
     var historyVisible = false;
+    var resetOnNextOpen = false;
 
     // ---- Frame size signaling ------------------------------------------------
     // Tell the parent body which mode we're in. The parent CSS resizes our
@@ -480,10 +492,33 @@
     }
 
     fab.addEventListener("click", function () {
-        if (isOpen) closeWidget();
-        else openWidget();
+        if (isOpen) {
+            closeWidget();
+            return;
+        }
+        if (resetOnNextOpen) {
+            resetOnNextOpen = false;
+            thread.innerHTML = "";
+            renderedMsgCount = 0;
+            showWelcome();
+            hideHistoryPanel();
+            if (input) {
+                input.disabled = false;
+                input.value = "";
+                input.placeholder = "Ask about Australian suburb data...";
+            }
+            if (sendBtn) sendBtn.disabled = false;
+            send(SET_VALUE, {
+                value: { action: "new_chat", ts: Date.now() },
+                dataType: "json"
+            });
+        }
+        openWidget();
     });
-    closeBtn.addEventListener("click", closeWidget);
+    closeBtn.addEventListener("click", function () {
+        resetOnNextOpen = true;
+        closeWidget();
+    });
     expandBtn.addEventListener("click", toggleSplit);
 
     // ---- New chat / past-chats overlay --------------------------------------
@@ -548,10 +583,25 @@
 
     // ---- DOM helpers --------------------------------------------------------
 
-    function makeMsgNode(role, content) {
+    function makeMsgNode(role, content, imageB64) {
         var div = document.createElement("div");
         div.className = "cw-msg " + (role === "user" ? "user" : "assistant");
-        div.textContent = String(content == null ? "" : content);
+        var text = String(content == null ? "" : content).trim();
+        if (imageB64) {
+            var img = document.createElement("img");
+            img.alt = "Chart";
+            img.src = "data:image/png;base64," + String(imageB64);
+            div.appendChild(img);
+        }
+        if (text) {
+            var span = document.createElement("div");
+            span.className = "cw-msg-text";
+            span.textContent = text;
+            div.appendChild(span);
+        }
+        if (!imageB64 && !text) {
+            div.textContent = "";
+        }
         return div;
     }
     function makeThinkingNode() {
@@ -667,7 +717,7 @@
         // when Python's rerun lands. The reconcile() pass will leave these
         // alone (counts will line up when args arrive).
         showThread();
-        thread.appendChild(makeMsgNode("user", value));
+        thread.appendChild(makeMsgNode("user", value, null));
         renderedMsgCount += 1;
         if (!document.getElementById("cw-thinking")) {
             thread.appendChild(makeThinkingNode());
@@ -720,14 +770,22 @@
 
         var box = document.createElement("div");
         box.className = "cw-suggestions";
-        list.slice(0, 3).forEach(function (text) {
+        list.slice(0, 4).forEach(function (text) {
             var chip = document.createElement("button");
             chip.type = "button";
             chip.className = "cw-chip";
-            chip.textContent = String(text);
+            var label = String(text);
+            chip.textContent = label;
             chip.addEventListener("click", function () {
                 if (input && input.disabled) return;
-                sendQuestionText(chip.textContent);
+                if (label === "Show as a chart?") {
+                    send(SET_VALUE, {
+                        value: { action: "chart", ts: Date.now() },
+                        dataType: "json"
+                    });
+                    return;
+                }
+                sendQuestionText(label);
             });
             box.appendChild(chip);
         });
@@ -786,7 +844,7 @@
         if (items.length > renderedMsgCount) {
             for (var i = renderedMsgCount; i < items.length; i++) {
                 var m = items[i] || {};
-                thread.appendChild(makeMsgNode(m.role, m.content));
+                thread.appendChild(makeMsgNode(m.role, m.content, m.image_b64));
             }
             renderedMsgCount = items.length;
         } else if (items.length < renderedMsgCount) {
@@ -794,7 +852,7 @@
             // started a new chat). Rebuild from scratch.
             thread.innerHTML = "";
             items.forEach(function (m) {
-                thread.appendChild(makeMsgNode(m.role, m.content));
+                thread.appendChild(makeMsgNode(m.role, m.content, m.image_b64));
             });
             renderedMsgCount = items.length;
         }

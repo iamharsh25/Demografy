@@ -3,11 +3,21 @@ Automated evaluation script for the Demografy chatbot.
 
 Runs all questions from the golden dataset through the chatbot,
 scores each answer with LLM-as-a-judge, and generates a report.
+
+Run from repo root::
+
+    python eval/run_eval.py
 """
 
 import json
 import re
 import sys
+from pathlib import Path
+
+# Allow ``python eval/run_eval.py`` without setting PYTHONPATH.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from agent.sql_agent import ask
 from eval.judge import score_answer
@@ -46,7 +56,7 @@ def run_evaluation():
         print("-" * 80)
 
         try:
-            answer, sql_query = ask(question)
+            answer, sql_query, _meta = ask(question)
             print("[ok] Answer received", flush=True)
 
             sql_match = bool(re.search(expected_pattern, sql_query or "", re.IGNORECASE | re.DOTALL))

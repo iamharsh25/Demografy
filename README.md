@@ -103,6 +103,50 @@ You should see real suburb names and metrics explained in natural language. If y
 
 ---
 
+## Evaluation
+
+Two complementary evaluation suites live under [`eval/`](eval).
+
+### 1. Golden-dataset eval (project deliverable)
+
+Single-turn accuracy with SQL-pattern matching and an LLM judge per question.
+
+```bash
+python eval/run_eval.py
+```
+
+Reads [`eval/golden_dataset.json`](eval/golden_dataset.json), writes
+[`eval/results.json`](eval/results.json), and prints a pass/fail summary.
+
+### 2. Conversation stress eval (internal QA)
+
+Multi-turn scenarios that exercise follow-up understanding, suggested
+follow-up chips, and conversational memory. Each scenario runs through the
+real `agent.sql_agent.ask` plus `agent.suggestions.generate_suggestions`, with
+in-memory `history` (does not write to `ChatHistory/`). Every turn is checked
+against rules (no SQL / `kpi_*` leak, chips end with `?`, max 3 chips), and the
+whole transcript is scored 1-5 by a Gemini judge.
+
+```bash
+python eval/run_conversation_eval.py
+```
+
+Reads [`eval/conversation_stress_dataset.json`](eval/conversation_stress_dataset.json)
+and writes [`eval/conversation_results.json`](eval/conversation_results.json).
+This is **internal QA**, not part of the golden-dataset deliverable.
+
+### LangSmith tracing for evals
+
+Both evals run through LangChain, so traces appear in the LangSmith project
+named by `LANGCHAIN_PROJECT` (default `demografy-chatbot`). To confirm:
+
+```bash
+python eval/verify_langsmith.py --smoke           # add a fresh trace + list runs
+python eval/langsmith_account_check.py            # which workspace owns your key
+```
+
+---
+
 ## Website embedding and “plugin” integrations
 
 **Today:** the chat is a **Streamlit application**, not a drop-in `<script>` for arbitrary websites. Integration options you can support **right now**:
@@ -125,6 +169,29 @@ You should see real suburb names and metrics explained in natural language. If y
 | Wrong port / bookmarked URL | Use **8502** if using the bundled `.streamlit/config.toml` |
 | BigQuery / auth errors | Verify `GOOGLE_APPLICATION_CREDENTIALS` path and IAM roles |
 | VS Code import squiggles | Select interpreter: `./venv/bin/python` |
+| **LangSmith shows 0 traces** | See [LangSmith tracing](#langsmith-tracing) below. |
+
+### LangSmith tracing
+
+If **`verify_langsmith.py` shows runs** but the **LangSmith website** shows **0 traces**, you are almost always in the **wrong workspace** in the browser (the API key is scoped to one workspace; the UI defaults to another).
+
+**Confirm which workspace your key uses:**
+
+```bash
+python eval/langsmith_account_check.py
+```
+
+That prints the **workspace display name**, **workspace ID**, **project ID**, **run count**, and a **direct URL** like  
+`https://smith.langchain.com/o/<workspace-id>/projects/p/<project-id>`  
+Open that link while logged into LangSmith (same account that created the API key in `.env`). You should see all traces there—use that page for **deliverable screenshots**.
+
+Other checks:
+
+1. **`.env` in the repo root** must include `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, and `LANGCHAIN_PROJECT=demografy-chatbot` (see `.env.template`). Restart the app after editing.
+2. In the UI, use the **workspace switcher** (often bottom-left or next to your org name) until it matches the **display name** from `langsmith_account_check.py`.
+3. **Open the project, not only Home:** **Tracing** → **`demografy-chatbot`** → **Runs**.
+
+The app loads `.env` from the **Demografy directory** automatically (even if you start Streamlit from a parent folder) so LangChain sees tracing variables before it initialises.
 
 ---
 

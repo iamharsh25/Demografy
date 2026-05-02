@@ -304,14 +304,18 @@ Return ONLY the business-facing answer and keep it concise.
 #   the user-facing answer - not even in parentheses or footnotes. Refer to
 #   metrics ONLY by their natural-language name (e.g. "diversity index",
 #   "prosperity score", "rental access").
-# Return user-friendly results only in these formats:
-# - Single scalar (one-value) answers: value only on one line (e.g. 25.38)
-# - Single name answers: name only on one line (e.g. Victoria)
+# Answer shape (mandatory):
+# - ALWAYS start with ONE opening sentence that names the metric (or comparison)
+#   and the geography (state, Australia, suburbs, etc.) before any numbers or list.
+# - After that sentence, use the formats below for the body.
+# Return user-friendly results only in these formats for the body:
+# - Single scalar (one-value) answers: value on the next line (e.g. 25.38)
+# - Single name answers: name on the next line (e.g. Victoria)
 # - Top-N or lists: numbered lines "1. <suburb name>: <value>"
 # - State comparisons: one numbered line per row:
 #   "1. <state>: home ownership <value>%, rental access <value>%"
 # - Percentages: include the % sign (e.g. 57.93%)
-# After the result, optionally add one short sentence (<= 20 words) in plain
+# After the list or value, optionally add one short sentence (<= 20 words) in plain
 # English using only natural-language metric names. Do NOT add column-name
 # footnotes such as "(kpi_2_val)" or "diversity index (kpi_2_val) shown as 0-1".
 
