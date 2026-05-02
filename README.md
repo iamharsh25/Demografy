@@ -1,230 +1,195 @@
 # Demografy Insights Chatbot
 
-A natural-language AI chatbot for the Demografy platform. Ask questions about Australian suburb demographics in plain English and get instant, data-driven answers.
+A natural-language AI assistant for the Demografy platform. Ask questions about Australian suburb demographics in plain English and get concise, data-driven answers backed by BigQuery.
 
-**Built with:** Python · Streamlit · LangChain · Gemini 2.5 Flash · Google BigQuery · LangSmith
+**Built with:** Python · Streamlit · LangChain · Gemini · Google BigQuery · LangSmith
 
 ---
 
-## What It Does
+## What it does
 
-Users type questions like:
+Users ask questions like:
+
 > "What are the top 3 suburbs in Victoria with the highest diversity index?"
 
-The bot:
-1. Translates the question into SQL using Gemini AI
-2. Runs the query against Demografy's BigQuery database
-3. Returns a clear, plain-English answer
-4. Shows the exact SQL query used (expandable in the UI)
+The app:
+
+1. Uses Gemini (via a LangChain SQL agent) to turn the question into SQL where needed  
+2. Runs read-only queries against Demografy's BigQuery views  
+3. Returns a **plain-English** answer (internal column names and SQL are not shown in the chat UI)  
+4. Supports **login**, **per-session question limits**, **multi-thread chat history** on disk, and **optional follow-up suggestion chips** after each reply  
+
+The current UI is **Streamlit v4** with a **custom chat widget** (persistent iframe + fragment-scoped agent runs to avoid page-wide flicker).
 
 ---
 
-## Project Structure
+## Project structure (overview)
 
 ```
 Demografy/
-├── app.py                    # Streamlit app — entry point, run this
-├── agent/
-│   ├── sql_agent.py          # LangChain SQL agent (core AI logic)
-│   └── prompts.py            # Few-shot examples + KPI column mappings
-├── auth/
-│   └── rbac.py               # User tier lookup + question limits
-├── db/
-│   ├── bigquery_client.py    # BigQuery connection wrapper
-│   └── explore.py            # One-time data exploration script
-├── eval/
-│   ├── golden_dataset.json   # Test Q&A pairs
-│   ├── run_eval.py           # Automated evaluation script
-│   └── judge.py              # LLM-as-a-judge scorer
-├── .streamlit/
-│   └── config.toml           # Demografy brand theme (colours, font)
-├── .env.template             # Copy this to .env and fill in your keys
-├── requirements.txt          # All Python dependencies
-└── CHANGELOG.md              # Version history
+├── app.py                 # Entry: run `streamlit run app.py` (delegates to app_v4)
+├── app_v4.py              # Page config, header/body, chat @st.fragment
+├── components/            # Header, body, styles, state, chat_engine, chat_widget
+├── agent/                 # sql_agent, prompts, suggestions
+├── chat_history/          # JSONL storage, context block, thread list
+├── auth/rbac.py           # Tiers and question limits
+├── db/                    # BigQuery helpers
+├── eval/                  # Golden dataset + eval scripts
+├── ChatHistory/           # Runtime transcripts (gitignored); see chat_history/
+├── .streamlit/config.toml # Theme + port (8502)
+├── README.md              # This file
+├── PROJECT_FILES.md       # What each file/folder does (detailed)
+├── HOW_IT_WORKS.md        # Plain-English architecture for the team
+└── CHANGELOG.md
 ```
 
----
-
-## Setup Instructions
-
-Follow these steps in order. Takes about 10 minutes.
-
-### Step 1 — Prerequisites
-
-Make sure you have:
-- **Python 3.11 or higher** — check with `python3 --version`
-- **Git** — check with `git --version`
-- A terminal (Mac: Terminal app or VS Code integrated terminal)
+For a **line-by-line map** of source files, see **[PROJECT_FILES.md](PROJECT_FILES.md)**.
 
 ---
 
-### Step 2 — Clone the repository
+## Setup
+
+### Prerequisites
+
+- **Python 3.11+** — `python3 --version`  
+- **Git**  
+- A terminal  
+
+### Clone and install
 
 ```bash
 git clone https://github.com/iamharsh25/Demografy.git
 cd Demografy
-```
-
----
-
-### Step 3 — Create a virtual environment
-
-A virtual environment keeps this project's packages separate from the rest of your system.
-
-```bash
 python3 -m venv venv
-```
-
-Then activate it:
-
-```bash
-# Mac / Linux
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-```
-
-You should see `(venv)` appear at the start of your terminal line. You need to run this activate command every time you open a new terminal.
-
----
-
-### Step 4 — Install all dependencies
-
-```bash
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-This installs everything: Streamlit, LangChain, Gemini SDK, BigQuery client, and more. Takes 1–2 minutes.
-
----
-
-### Step 5 — Set up your credentials
-
-Copy the template to create your `.env` file:
+### Credentials
 
 ```bash
 cp .env.template .env
 ```
 
-Open `.env` and fill in the three values:
+Edit `.env`:
 
-```
-GOOGLE_APPLICATION_CREDENTIALS=/full/path/to/your-bigquery-key.json
-GEMINI_API_KEY=your-gemini-api-key-here
-LANGCHAIN_API_KEY=your-langsmith-api-key-here
-```
+| Variable | Purpose |
+|----------|---------|
+| `GOOGLE_APPLICATION_CREDENTIALS` | Full path to your GCP service account JSON (BigQuery) |
+| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com) API key |
+| `LANGCHAIN_API_KEY` | [LangSmith](https://smith.langchain.com) (optional but recommended) |
 
-#### Where to get each credential:
+Never commit `.env` or `*.json` key files.
 
-| Credential | Where to get it |
-|---|---|
-| **BigQuery JSON key** | GCP Console → IAM & Admin → Service Accounts → `ai-insights-bot` → Keys tab → Add Key → JSON. Ask Wayne if you don't have access. |
-| **Gemini API Key** | Go to [aistudio.google.com](https://aistudio.google.com) → Sign in → Get API Key → Create API Key |
-| **LangSmith API Key** | Go to [smith.langchain.com](https://smith.langchain.com) → Sign up free → Settings → Create API Key |
-
-> **Security:** Never commit `.env` or any `*.json` key file to GitHub. They are already listed in `.gitignore`.
-
----
-
-### Step 6 — Run the app
+### Run the app
 
 ```bash
 streamlit run app.py
 ```
 
-The app opens automatically in your browser at `http://localhost:8501`
+This repo sets **`port = 8502`** in `.streamlit/config.toml`, so the app is typically at:
+
+**http://localhost:8502**
+
+(If you remove or override that file, Streamlit defaults to port `8501`.)
+
+### Quick verification
+
+Sign in (demo users from `auth/rbac.py`), then ask:
+
+> "What are the top 5 most diverse suburbs in Victoria?"
+
+You should see real suburb names and metrics explained in natural language. If you see connection or permission errors, check `GOOGLE_APPLICATION_CREDENTIALS` and restart Streamlit.
 
 ---
 
-### Step 7 — Verify everything is working
+## Website embedding and “plugin” integrations
 
-Ask the chatbot:
-> "What are the top 5 most diverse suburbs in Victoria?"
+**Today:** the chat is a **Streamlit application**, not a drop-in `<script>` for arbitrary websites. Integration options you can support **right now**:
 
-You should see:
-- Real suburb names (e.g. Keilor Downs, Delahey) — not generic AI answers
-- A **🔍 View SQL Query** expander below the answer — click it to see the SQL that ran
+| Approach | Effort for the customer | Notes |
+|----------|-------------------------|--------|
+| **Link** | Trivial | Button or link to your hosted Streamlit URL (e.g. Streamlit Community Cloud or your own server). |
+| **iframe** | Low | Embed your hosted app: `<iframe src="https://your-app-url" ...></iframe>`. You must allow framing (CSP / `X-Frame-Options`) on your host. Height, mobile UX, and cookies for login need thought. |
+| **Self-host** | Medium | They clone this repo, set `.env`, and run `streamlit run app.py` behind their reverse proxy / domain. |
 
-If you see *"Live data not connected"*, check that your `GOOGLE_APPLICATION_CREDENTIALS` path in `.env` points to the correct JSON file and restart the app.
+**Future plugin model:** a separate **HTTP API** (e.g. FastAPI) that wraps the same `sql_agent.ask()` logic with API keys or JWTs would let **any** frontend (React, Vue, mobile) call Demografy as a backend service. That layer is not in this repo yet; treat it as a product roadmap item for true “plugin” parity with SaaS chat widgets.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---|---|
-| `ModuleNotFoundError` | Run `source venv/bin/activate` then try again |
-| `"Live data not connected"` | Check `.env` has correct BigQuery key path, restart Streamlit |
-| Red import errors in VS Code | Press `Cmd+Shift+P` → "Python: Select Interpreter" → choose `./venv/bin/python3` |
-| Port already in use | Run `pkill -f streamlit` then `streamlit run app.py` |
+| Problem | What to try |
+|---------|-------------|
+| `ModuleNotFoundError` | Activate the venv: `source venv/bin/activate` |
+| Wrong port / bookmarked URL | Use **8502** if using the bundled `.streamlit/config.toml` |
+| BigQuery / auth errors | Verify `GOOGLE_APPLICATION_CREDENTIALS` path and IAM roles |
+| VS Code import squiggles | Select interpreter: `./venv/bin/python` |
 
 ---
 
-## Data Reference
+## Data reference
 
-- **Production table:** `demografy.prod_tables.a_master_view`
-- **Customer table:** `demografy.ref_tables.dev_customers`
-- **Coverage:** 2,329 Australian SA2 suburbs
+- **Main analytical view:** `demografy.prod_tables.a_master_view` (and related ref tables as configured in the agent)  
+- **Coverage:** thousands of Australian SA2 suburbs  
 
-### KPI Column Reference
+The chat surfaces metrics in **plain English**. Internally, KPI columns map roughly as follows (see `agent/prompts.py` for full agent context):
 
-| Column | KPI Name | Description | Range |
-|---|---|---|---|
-| kpi_1_val | Prosperity Score | Socioeconomic advantage based on income, occupation, education, housing | 0–100 |
-| kpi_2_val | Diversity Index | Cultural diversity — 1.0 = maximally diverse, 0 = homogeneous | 0–1 |
-| kpi_3_val | Migration Footprint | % residents with at least one overseas-born parent | 0–100% |
-| kpi_4_val | Learning Level | % residents who completed Year 12 | 0–100% |
-| kpi_5_val | Social Housing | % dwellings that are public/community housing | 0–100% |
-| kpi_6_val | Resident Equity | % dwellings owned outright or with a mortgage | 0–100% |
-| kpi_7_val | Rental Access | % dwellings renting below $450/week | 0–100% |
-| kpi_8_val | Resident Anchor | % residents who stayed 5+ years in same community | 0–100% |
-| kpi_9_val | Household Mobility Potential | % households in transitional socioeconomic positions | 0–1 |
-| kpi_10_val | Young Family Indicator | % population aged 0–14 | 0–100% |
+| Column | Metric (user-facing name) | Typical range |
+|--------|---------------------------|---------------|
+| `kpi_1_val` | Prosperity score | 0–100 |
+| `kpi_2_val` | Diversity index | 0–1 |
+| `kpi_3_val` | Migration footprint | 0–100% |
+| `kpi_4_val` | Learning level | 0–100% |
+| `kpi_5_val` | Social housing | 0–100% |
+| `kpi_6_val` | Home ownership / resident equity | 0–100% |
+| `kpi_7_val` | Rental access | 0–100% |
+| `kpi_8_val` | Resident anchor | 0–100% |
+| `kpi_9_val` | Household mobility potential | 0–1 |
+| `kpi_10_val` | Young family indicator | 0–100% |
 
 ---
 
-## User Tiers
+## User tiers
 
-| Tier | Questions per Session |
-|---|---|
+| Tier | Questions per session (typical) |
+|------|----------------------------------|
 | Free | 5 |
 | Basic | 20 |
 | Pro | 50 |
 
+(Configured in `auth/rbac.py`.)
+
 ---
 
-## How It Works (Architecture)
+## Architecture (high level)
 
 ```
-User types question
+Browser (Streamlit + custom chat iframe)
+    ↓ component value (question / new_chat / open_thread)
+components/chat_engine.py
+    ↓ last_n_turns from chat_history/storage.py
+agent/sql_agent.py  →  Gemini + BigQuery (read-only)
     ↓
-Streamlit (app.py) — the web interface
+Answer + optional agent/suggestions.py chips
     ↓
-LangChain SQL Agent (agent/sql_agent.py) — the orchestrator
-    ↓ sends question + few-shot examples
-Gemini 2.5 Flash — generates SQL
-    ↓ SQL query
-Google BigQuery — runs the query, returns data
-    ↓ results
-Gemini 2.5 Flash — formats data into a plain English answer
-    ↓
-User sees the answer + SQL expander
-    ↓ (logged automatically)
-LangSmith — records every step for observability
+Session state + JSONL under ChatHistory/<user>/
 ```
 
----
-
-## Security
-
-- `.env` and all `*.json` key files are gitignored — never committed to GitHub
-- SQL agent is restricted to read-only queries on `a_master_view` only
-- Destructive SQL (DELETE, UPDATE, INSERT, DROP) is blocked in the agent prompt
-- All queries include LIMIT clauses to prevent expensive full-table scans
+Observability: LangSmith when configured.
 
 ---
 
-## Version History
+## Security notes
 
-See [CHANGELOG.md](CHANGELOG.md)
+- Secrets stay in `.env` and are gitignored.  
+- Agent prompts and sanitisation discourage destructive SQL and hide internal schema details from end users.  
+- Queries should remain bounded (e.g. `LIMIT`) per agent configuration.  
+
+---
+
+## More documentation
+
+- **[PROJECT_FILES.md](PROJECT_FILES.md)** — what each file does  
+- **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)** — narrative explanation for stakeholders  
+- **[CHANGELOG.md](CHANGELOG.md)** — version history  
