@@ -64,6 +64,7 @@ STATE_ALIASES = {
     "tasmania": "Tasmania",
     "vic": "Victoria",
     "victoria": "Victoria",
+    "victorian": "Victoria",
     "wa": "Western Australia",
     "western australia": "Western Australia",
 }
@@ -277,7 +278,36 @@ def _rankable_metric(text: str) -> dict | None:
 
 
 def _is_ranking_request(text: str) -> bool:
-    return any(word in text for word in ("top", "highest", "most", "show", "find", "rank", "based on"))
+    return any(
+        word in text
+        for word in (
+            "top",
+            "highest",
+            "most",
+            "least",
+            "lowest",
+            "show",
+            "find",
+            "rank",
+            "based on",
+            "list",
+            "give",
+            "tell",
+        )
+    )
+
+
+def _home_ownership_state_average_intent(text: str) -> bool:
+    """True when the user wants a single statewide figure, not a suburb list."""
+    if "home ownership" not in text and "resident equity" not in text:
+        return False
+    if any(w in text for w in ("suburb", "suburbs", "sa2", "sa3", "sa4")):
+        return False
+    if any(phrase in text for phrase in ("all ", "every ", "each ", "full list")):
+        return False
+    if _is_ranking_request(text):
+        return False
+    return True
 
 
 def _template_sql_for_question(question: str) -> tuple[str, str] | None:
@@ -326,6 +356,18 @@ LIMIT {limit};"""
 FROM `demografy.prod_tables.a_master_view`
 WHERE state = '{state}'
   AND kpi_1_val IS NOT NULL
+LIMIT 1;"""
+        return "single_scalar", sql
+
+    if state and _home_ownership_state_average_intent(text):
+        filters = [
+            f"state = '{state}'",
+            "kpi_6_val IS NOT NULL",
+            *_residential_filters(include_statistical_categories=True),
+        ]
+        sql = f"""SELECT ROUND(AVG(kpi_6_val), 2) AS avg_home_ownership
+FROM `demografy.prod_tables.a_master_view`
+WHERE {_where_clause(filters)}
 LIMIT 1;"""
         return "single_scalar", sql
 
@@ -612,6 +654,8 @@ def _template_lead_in(intent: str, rows: list, question: str, state: str | None)
     if intent == "single_scalar":
         if "prosperity" in q:
             return f"Average prosperity score{geo}:"
+        if "home ownership" in q or "resident equity" in q:
+            return f"Average home ownership (resident equity){geo}:"
         return f"Result for your query{geo}:"
 
     if intent == "single_name":
@@ -671,7 +715,8 @@ def _format_template_answer(
         return f"{lead}\n\n{body}"
 
     if intent == "single_scalar":
-        body = _fmt_number(rows[0][0])
+        pct = "home ownership" in q or "resident equity" in q
+        body = _fmt_number(rows[0][0], "%" if pct else "")
         return f"{lead}\n\n{body}"
 
     if intent == "single_name":
