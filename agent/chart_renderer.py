@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import re
+import tempfile
 from typing import Any, List, Literal, Optional, Tuple
 
 ChartKind = Literal["bar", "pie"]
@@ -41,6 +43,17 @@ _SLICE_COLORS = (
     "#ede9fe",
 )
 
+_STATE_ABBREVIATIONS = {
+    "Australian Capital Territory": "ACT",
+    "New South Wales": "NSW",
+    "Northern Territory": "NT",
+    "Queensland": "Qld",
+    "South Australia": "SA",
+    "Tasmania": "Tas",
+    "Victoria": "Vic",
+    "Western Australia": "WA",
+}
+
 
 def is_chartable(intent: str, rows: Any) -> bool:
     if intent not in CHARTABLE_INTENTS:
@@ -55,6 +68,14 @@ def _shorten_label(text: str, max_len: int = 28) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 1] + "…"
+
+
+def _area_label(row: tuple) -> str:
+    name = str(row[0] or "").strip() if len(row) > 0 else ""
+    state = str(row[1] or "").strip() if len(row) > 1 else ""
+    if state:
+        state = _STATE_ABBREVIATIONS.get(state, state)
+    return f"{name}, {state}" if state else name
 
 
 def _render_pie(
@@ -121,6 +142,11 @@ def build_chart_png_b64(
     if not is_chartable(intent, rows):
         return None
 
+    os.environ.setdefault(
+        "MPLCONFIGDIR",
+        os.path.join(tempfile.gettempdir(), "demografy-matplotlib"),
+    )
+
     import matplotlib
 
     matplotlib.use("Agg")
@@ -137,7 +163,7 @@ def build_chart_png_b64(
 
         if intent == "state_comparison":
             for row in rows[:10]:
-                labels.append(_shorten_label(str(row[0])))
+                labels.append(_shorten_label(_area_label(row)))
                 values.append(float(row[1]) if row[1] is not None else 0.0)
             y2 = [float(row[2]) if len(row) > 2 and row[2] is not None else 0.0 for row in rows[:10]]
             fig, ax = plt.subplots(figsize=(9, 4.2), dpi=120)
@@ -153,7 +179,7 @@ def build_chart_png_b64(
             fig.tight_layout()
         elif intent == "young_family_learning":
             for row in rows[:10]:
-                labels.append(_shorten_label(str(row[0])))
+                labels.append(_shorten_label(_area_label(row)))
                 values.append(float(row[2]) if len(row) > 2 and row[2] is not None else 0.0)
             if chart_kind == "pie":
                 fig, ax = plt.subplots(figsize=(9, 5.2), dpi=120)

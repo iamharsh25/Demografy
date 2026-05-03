@@ -18,6 +18,14 @@ def load_global_css() -> None:
             #MainMenu { visibility: hidden !important; }
             header { visibility: hidden !important; }
             .block-container { padding: 0 !important; max-width: 100% !important; }
+            body.chat-active {
+                overflow: hidden !important;
+                overscroll-behavior: contain !important;
+            }
+            body.chat-active .stApp {
+                height: 100vh !important;
+                overflow: hidden !important;
+            }
 
             [data-testid="stHorizontalBlock"]:has(.nav-action-anchor) {
                 min-height: 66px;
@@ -179,6 +187,7 @@ def load_global_css() -> None:
             body.chat-active [data-testid="stElementContainer"]:has(iframe[title*="demografy_chat_widget"]) iframe {
                 width: min(92vw, 560px) !important;
                 height: min(82vh, 700px) !important;
+                max-height: 100vh !important;
             }
             body.chat-active.chat-split [data-testid="stElementContainer"]:has(iframe[title*="demografy_chat_widget"]) iframe {
                 width: 50vw !important;

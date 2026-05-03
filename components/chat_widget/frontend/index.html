@@ -13,6 +13,7 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
+            overscroll-behavior: contain;
             font-family: "Open Sauce One", "Inter", "Segoe UI", sans-serif;
         }
 
@@ -67,6 +68,8 @@
             border: 1px solid #dccbff;
             border-radius: 16px;
             overflow: hidden;
+            box-sizing: border-box;
+            contain: layout paint;
             box-shadow: 0 24px 48px rgba(94, 23, 235, 0.2), 0 6px 14px rgba(94, 23, 235, 0.12);
             z-index: 2195;
         }
@@ -118,7 +121,10 @@
         .cw-body {
             padding: 14px 14px 8px;
             flex: 1;
-            overflow: auto;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            overscroll-behavior: contain;
             display: flex;
             flex-direction: column;
             gap: 10px;
@@ -144,6 +150,7 @@
             flex-direction: column;
             gap: 8px;
             min-height: 0;
+            overflow: hidden;
         }
         .cw-welcome-intro {
             font-size: 0.86rem;
@@ -196,6 +203,7 @@
             max-height: min(38vh, 240px);
             overflow-y: auto;
             overflow-x: auto;
+            overscroll-behavior: contain;
             padding: 8px 10px 10px;
             border-top: 1px solid #eadfff;
             font-size: 0.76rem;
@@ -242,6 +250,7 @@
             display: none;
             flex-direction: column;
             gap: 8px;
+            min-height: 0;
         }
         .cw-thread.active { display: flex; }
         .cw-msg {
@@ -591,6 +600,47 @@
             color: #6b7280;
             font-size: 0.9rem;
         }
+
+        /* ---- Message action bar (copy / like / dislike) ------------------- */
+        .cw-msg-actions {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            margin-top: 2px;
+            margin-bottom: 2px;
+            align-self: flex-start;
+            padding-left: 4px;
+        }
+        .cw-action-btn {
+            border: none;
+            background: transparent;
+            color: #c4b5d4;
+            cursor: pointer;
+            width: 26px;
+            height: 26px;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            transition: color 0.12s ease, background 0.12s ease;
+            flex-shrink: 0;
+        }
+        .cw-action-btn:hover { color: #5e17eb; background: #f3eeff; }
+        .cw-action-btn.liked { color: #5e17eb; }
+        .cw-action-btn.disliked { color: #dc2626; }
+        .cw-action-btn svg { width: 14px; height: 14px; display: block; pointer-events: none; }
+        .cw-copy-ok {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: #5e17eb;
+            padding: 0 4px;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        .cw-copy-ok.visible { opacity: 1; }
     </style>
 </head>
 <body>
@@ -617,8 +667,9 @@
             <div class="cw-welcome-intro">
                 <strong>Demografy AI Agent</strong>
                 <p>
-                    Ask about Australian suburb areas (ABS SA2). Get rankings, averages, KPI values for a named suburb,
-                    definitions of metrics, or charts from your last result.
+                    I answer questions about Australian suburb demographics and community signals. I do not use live
+                    house-price or property sales data; for affordability-style questions I can use proxies like rental
+                    access, home ownership, prosperity, social housing, and stability.
                 </p>
             </div>
             <details class="cw-welcome-details">
@@ -627,6 +678,9 @@
                 </summary>
                 <div class="cw-welcome-scroll">
                     <ul class="cw-welcome-list">
+                        <li>Not included: live house prices, listings, crime, school rankings, transport access, amenities, forecasts, or income data.</li>
+                        <li>Try: affluent suburbs in Victoria, educated suburbs in NSW, stable suburbs with high home ownership, or affordable rental suburbs in Queensland.</li>
+                        <li>For a named area, ask: diversity index in Forde, home ownership in Berwick, or population in Parramatta.</li>
                         <li>Examples: top diverse suburbs in NSW, average prosperity in Victoria, diversity index in Forde, “what KPIs do you measure?”</li>
                         <li>After a list or ranking answer, type <strong>pie chart</strong> or use <strong>Show as a chart?</strong> to visualise.</li>
                     </ul>
@@ -777,6 +831,29 @@
     var lastActiveThreadId = ""; // id of the thread we last reconciled to
     var historyVisible = false;
     var resetOnNextOpen = false;
+    var MODE_STORAGE_KEY = "demografy_chat_widget_mode_v1";
+
+    function persistWidgetMode() {
+        try {
+            window.localStorage.setItem(
+                MODE_STORAGE_KEY,
+                JSON.stringify({ isOpen: !!isOpen, isSplit: !!isSplit })
+            );
+        } catch (_e) {}
+    }
+
+    function restoreWidgetMode() {
+        try {
+            var raw = window.localStorage.getItem(MODE_STORAGE_KEY);
+            if (!raw) return;
+            var mode = JSON.parse(raw);
+            isOpen = !!mode.isOpen;
+            isSplit = !!mode.isSplit && isOpen;
+            widget.classList.toggle("open", isOpen);
+            widget.classList.toggle("split", isSplit);
+            fab.classList.toggle("hidden", isOpen);
+        } catch (_e) {}
+    }
 
     // ---- Cooldown ticker ----------------------------------------------------
     // Drives the live "You can ask again in Xs" label without waiting for
@@ -859,6 +936,7 @@
         isOpen = true;
         widget.classList.add("open");
         fab.classList.add("hidden");
+        persistWidgetMode();
         broadcastMode();
         if (input && !input.disabled) {
             setTimeout(function () { input.focus(); }, 60);
@@ -873,12 +951,14 @@
         widget.classList.remove("split");
         fab.classList.remove("hidden");
         if (historyVisible) hideHistoryPanel();
+        persistWidgetMode();
         broadcastMode();
     }
     function toggleSplit() {
         if (!isOpen) return;
         isSplit = !isSplit;
         widget.classList.toggle("split", isSplit);
+        persistWidgetMode();
         broadcastMode();
     }
 
@@ -1040,6 +1120,7 @@
     }
 
     function makeMsgNode(role, content, imageB64) {
+        var frag = document.createDocumentFragment();
         var div = document.createElement("div");
         div.className = "cw-msg " + (role === "user" ? "user" : "assistant");
         var text = String(content == null ? "" : content).trim();
@@ -1083,7 +1164,95 @@
         if (!imageB64 && !text) {
             div.textContent = "";
         }
-        return div;
+        frag.appendChild(div);
+
+        // Action bar: copy / like / dislike — assistant messages only.
+        if (role !== "user") {
+            var actions = document.createElement("div");
+            actions.className = "cw-msg-actions";
+
+            // Copy
+            var copyBtn = document.createElement("button");
+            copyBtn.type = "button";
+            copyBtn.className = "cw-action-btn";
+            copyBtn.title = "Copy";
+            copyBtn.setAttribute("aria-label", "Copy message");
+            copyBtn.innerHTML =
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+                '<rect x="9" y="9" width="13" height="13" rx="2"/>' +
+                '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+            var copyOk = document.createElement("span");
+            copyOk.className = "cw-copy-ok";
+            copyOk.textContent = "Copied!";
+            copyOk.setAttribute("aria-live", "polite");
+            var copyTimeout = null;
+            copyBtn.addEventListener("click", function () {
+                var copyText = text || "";
+                function showFeedback() {
+                    copyOk.classList.add("visible");
+                    clearTimeout(copyTimeout);
+                    copyTimeout = setTimeout(function () {
+                        copyOk.classList.remove("visible");
+                    }, 1500);
+                }
+                if (navigator.clipboard && copyText) {
+                    navigator.clipboard.writeText(copyText).then(showFeedback).catch(function () {});
+                } else if (copyText) {
+                    var ta = document.createElement("textarea");
+                    ta.value = copyText;
+                    ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+                    document.body.appendChild(ta);
+                    ta.focus();
+                    ta.select();
+                    try { document.execCommand("copy"); } catch (_e) {}
+                    document.body.removeChild(ta);
+                    showFeedback();
+                }
+            });
+
+            // Like
+            var likeBtn = document.createElement("button");
+            likeBtn.type = "button";
+            likeBtn.className = "cw-action-btn";
+            likeBtn.title = "Helpful";
+            likeBtn.setAttribute("aria-label", "Mark as helpful");
+            likeBtn.innerHTML =
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+                '<path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/>' +
+                '<path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>';
+
+            // Dislike
+            var dislikeBtn = document.createElement("button");
+            dislikeBtn.type = "button";
+            dislikeBtn.className = "cw-action-btn";
+            dislikeBtn.title = "Not helpful";
+            dislikeBtn.setAttribute("aria-label", "Mark as not helpful");
+            dislikeBtn.innerHTML =
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+                '<path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/>' +
+                '<path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>';
+
+            var liked = false;
+            var disliked = false;
+            likeBtn.addEventListener("click", function () {
+                liked = !liked;
+                if (liked) { disliked = false; dislikeBtn.classList.remove("disliked"); }
+                likeBtn.classList.toggle("liked", liked);
+            });
+            dislikeBtn.addEventListener("click", function () {
+                disliked = !disliked;
+                if (disliked) { liked = false; likeBtn.classList.remove("liked"); }
+                dislikeBtn.classList.toggle("disliked", disliked);
+            });
+
+            actions.appendChild(copyBtn);
+            actions.appendChild(copyOk);
+            actions.appendChild(likeBtn);
+            actions.appendChild(dislikeBtn);
+            frag.appendChild(actions);
+        }
+
+        return frag;
     }
     function makeThinkingNode() {
         var div = document.createElement("div");
@@ -1246,7 +1415,8 @@
         // Only show chips when the latest visible bubble is an assistant
         // reply. If the trailing node is a user bubble (e.g. mid-flight
         // optimistic state), suppress chips - they belong with the answer.
-        var lastMsg = thread.querySelector(".cw-msg:last-of-type");
+        var allMsgs = thread.querySelectorAll(".cw-msg");
+        var lastMsg = allMsgs.length ? allMsgs[allMsgs.length - 1] : null;
         if (!lastMsg || !lastMsg.classList.contains("assistant")) return;
 
         var box = document.createElement("div");
@@ -1374,6 +1544,7 @@
 
     // ---- Boot ---------------------------------------------------------------
 
+    restoreWidgetMode();
     send(READY, { apiVersion: 1 });
     // The parent stylesheet sizes our iframe via CSS. Keep the legacy
     // setFrameHeight handshake happy with a placeholder height; the visible
