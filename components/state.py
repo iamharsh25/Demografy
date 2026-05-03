@@ -34,6 +34,7 @@ SESSION_DEFAULTS = [
     ("chat_thread_id", None),
     ("chat_suggestions", []),
     ("chat_last_query", None),
+    ("chat_context_query", None),
     ("chat_cooldown_until", None),
 ]
 
@@ -90,6 +91,7 @@ def hydrate_chat_history(user_id: str) -> None:
     # session. They only appear after a fresh answer this session.
     st.session_state.chat_suggestions = []
     st.session_state.chat_last_query = None
+    st.session_state.chat_context_query = None
 
     # Restore any active cooldown so a hard refresh keeps the timer
     # ticking. ``chat_engine`` expires it on the next interaction if the

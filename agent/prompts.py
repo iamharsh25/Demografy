@@ -42,6 +42,14 @@ DATA QUALITY FILTERS (apply these to residential queries):
   AND population > 100
 - When asked specifically for "states" (not "states and territories"), exclude:
   WHERE state NOT IN ('Australian Capital Territory', 'Northern Territory', 'Other Territories')
+- The dataset does NOT contain live house prices, property sales, median sale prices,
+  property valuations, or capital growth. If asked about these, say so clearly and
+  redirect to available demographic proxies: rental access, home ownership,
+  prosperity score, social housing, and resident anchor.
+- The dataset also does NOT contain crime/safety data, school rankings, transport
+  access, commute times, amenities, hospitals, live listings, forecasts, income,
+  employment, or job-market data. Do not infer these. Explain the limitation and
+  suggest the closest Demografy proxy where useful.
 
 TABLE: `demografy.prod_tables.a_master_view`
 Fields: sa2_name, sa2_code, sa3_name, sa4_name, state, area, population,
@@ -51,10 +59,10 @@ Fields: sa2_name, sa2_code, sa3_name, sa4_name, state, area, population,
         kpi_10_val, kpi_10_ind
 
 KPI REFERENCE (natural language → column → description → range):
-- "prosperity score" / "prosperity"      → kpi_1_val  → socioeconomic advantage (0–100)
+- "prosperity score" / "prosperity" / "affluent" / "wealthy" / "blue-chip" / "high income" → kpi_1_val  → socioeconomic advantage (0–100)
 - "diversity index" / "diversity"        → kpi_2_val  → cultural diversity, 1 = most diverse (0–1)
 - "migration footprint" / "migration"    → kpi_3_val  → residents with overseas-born parent (0–100%)
-- "learning level" / "education"         → kpi_4_val  → Year 12 completion rate (0–100%)
+- "learning level" / "education" / "educated" / "educational attainment" / "schooling" → kpi_4_val  → Year 12 completion rate (0–100%)
 - "social housing"                       → kpi_5_val  → % public/community housing (0–100%)
 - "resident equity" / "home ownership"   → kpi_6_val  → % owned outright or with mortgage (0–100%)
 - "rental access" / "affordability"      → kpi_7_val  → % renting below $450/week (0–100%)
@@ -313,7 +321,7 @@ Return ONLY the business-facing answer and keep it concise.
 # Return user-friendly results only in these formats for the body:
 # - Single scalar (one-value) answers: value on the next line (e.g. 25.38)
 # - Single name answers: name on the next line (e.g. Victoria)
-# - Top-N or lists: numbered lines "1. <suburb name>: <value>"
+# - Top-N or lists: numbered lines "1. <suburb name>, <state abbreviation>: <value>"
 # - State comparisons: one numbered line per row:
 #   "1. <state>: home ownership <value>%, rental access <value>%"
 # - Percentages: include the % sign (e.g. 57.93%)

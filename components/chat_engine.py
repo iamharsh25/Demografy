@@ -217,6 +217,7 @@ def start_new_chat() -> None:
     st.session_state.chat_pending_question = None
     st.session_state.chat_suggestions = []
     st.session_state.chat_last_query = None
+    st.session_state.chat_context_query = None
 
 
 def open_thread(thread_id: str) -> None:
@@ -256,6 +257,7 @@ def open_thread(thread_id: str) -> None:
     st.session_state.chat_pending_question = None
     st.session_state.chat_suggestions = []
     st.session_state.chat_last_query = None
+    st.session_state.chat_context_query = None
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +301,7 @@ def handle_new_question(question: str) -> None:
     # something else (typed or chip-clicked). Prevents the old suggestions
     # from briefly hanging under the new bubble while the agent thinks.
     st.session_state.chat_suggestions = []
+    st.session_state.chat_context_query = meta
     st.session_state.chat_last_query = None
 
     # Defensive: while a cooldown is active, drop the submission silently.
@@ -349,7 +352,8 @@ def resolve_pending_question() -> None:
     sql_query: Optional[str] = None
     template_meta: Optional[dict] = None
     try:
-        answer, sql_query, template_meta = ask(question, history=history)
+        context_meta = st.session_state.pop("chat_context_query", None)
+        answer, sql_query, template_meta = ask(question, history=history, context_meta=context_meta)
     except Exception:
         # Hide the raw exception from the user; recovery chips will offer
         # alternative on-topic questions based on the prior thread.
@@ -367,6 +371,16 @@ def resolve_pending_question() -> None:
             template_meta.get("rows"),
         ):
             st.session_state.chat_last_query = template_meta
+        elif sql_query and not template_meta:
+            # Preserve LLM-generated SQL so follow-ups ("more?", state swaps)
+            # can reference the prior query via context_meta injection.
+            st.session_state.chat_last_query = {
+                "sql": sql_query,
+                "intent": "llm_answer",
+                "rows": [],
+                "question": question,
+                "state": None,
+            }
         else:
             st.session_state.chat_last_query = None
     except Exception:
@@ -430,6 +444,10 @@ def handle_chart_request(chart_kind: ChartKind = "pie") -> None:
         str(meta.get("intent") or ""),
         meta.get("rows"),
     ):
+        _append(
+            "assistant",
+            "I can only create a chart after a ranked list or comparison result. Ask for a suburb ranking first, then try the chart again.",
+        )
         return
 
     built = build_chart_png_b64(
@@ -439,6 +457,10 @@ def handle_chart_request(chart_kind: ChartKind = "pie") -> None:
         chart_kind=chart_kind,
     )
     if not built:
+        _append(
+            "assistant",
+            "I couldn't create the chart for that result. The data answer is still available above, but the visual failed to render.",
+        )
         return
 
     title, png_b64 = built

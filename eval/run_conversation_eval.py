@@ -119,11 +119,12 @@ def _run_scenario(scenario: dict) -> dict:
     transcript: list[dict] = []
     rule_failures: list[str] = []
     error: str | None = None
+    prev_meta: dict | None = None
 
     for i, q in enumerate(turns_in, start=1):
         print(f"  Turn {i} user: {q}", flush=True)
         try:
-            answer, sql, meta = ask(q, history=history)
+            answer, sql, meta = ask(q, history=history, context_meta=prev_meta)
         except Exception as exc:
             error = f"ask() raised: {exc!r}"
             rule_failures.append(error)
@@ -151,6 +152,10 @@ def _run_scenario(scenario: dict) -> dict:
             rule_failures.append(f"turn {i} generate_suggestions raised: {exc!r}")
 
         rule_failures.extend(f"turn {i} {f}" for f in _check_chip_shape(chips))
+
+        # Thread meta forward so the next turn can reference previous result rows
+        # (mirrors chat_engine.resolve_pending_question which passes context_meta).
+        prev_meta = meta if meta and not meta.get("clarification") else None
 
         # Update history AFTER the call so the model sees the same context the
         # live engine builds in chat_engine.resolve_pending_question.
