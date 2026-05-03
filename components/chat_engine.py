@@ -21,10 +21,13 @@ Agent context (``last_n_turns``) is always scoped to ``chat_thread_id``
 so follow-ups never bleed across separate conversations.
 """
 
+import re
 import time
-from typing import Optional
+from typing import Literal, Optional
 
 import streamlit as st
+
+ChartKind = Literal["pie", "bar"]
 
 from auth.cooldown import clear_cooldown, set_cooldown_until
 from auth.rbac import (
@@ -42,6 +45,66 @@ from chat_history.storage import (
 
 
 HISTORY_TURNS = 5
+
+
+def _chart_visualization_followup(question: str) -> Optional[ChartKind]:
+    """If the user is asking to visualize the last result, return ``pie`` or ``bar``."""
+    q = " ".join(question.lower().strip().split())
+    if not q:
+        return None
+
+    strong_pie = (
+        "pie chart",
+        "piechart",
+        "pie graph",
+        "donut chart",
+        " in pie",
+        " as pie",
+        " a pie chart",
+        "pie?",
+    )
+    strong_bar = ("bar chart", "bar graph", "bar plot", "column chart", "histogram")
+
+    if any(s in q for s in strong_pie):
+        return "pie"
+    if any(s in q for s in strong_bar):
+        return "bar"
+
+    has_viz = any(
+        w in q
+        for w in ("chart", "graph", "plot", "visualize", "visualise", "diagram")
+    )
+    wants_action = any(
+        a in q
+        for a in (
+            "show ",
+            "show me",
+            "display ",
+            "see ",
+            "give me",
+            "can you show",
+            "could you show",
+            "can you ",
+            "could you ",
+            "i want ",
+            "put it in",
+            "put this in",
+        )
+    )
+    if has_viz and wants_action:
+        if "bar" in q or "column" in q or "histogram" in q:
+            return "bar"
+        if "pie" in q or "donut" in q:
+            return "pie"
+        return "pie"
+
+    # Short natural follow-ups like "show me in chart"
+    if re.search(r"\b(show|see)\s+(me\s+)?(this\s+)?(in\s+)?(a\s+)?(pie\s+)?chart\b", q):
+        return "pie"
+    if re.search(r"\bin\s+(a\s+)?chart\b", q) and len(q.split()) <= 12:
+        return "pie"
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +276,25 @@ def handle_new_question(question: str) -> None:
     question_count = int(st.session_state.get("question_count", 0))
     cooldown_until = st.session_state.get("chat_cooldown_until")
 
+    # Typed chart request: reuse the last templated result without calling the LLM.
+    chart_kind = _chart_visualization_followup(question)
+    meta = st.session_state.get("chat_last_query")
+    if chart_kind and meta:
+        try:
+            from agent.chart_renderer import is_chartable
+
+            if is_chartable(
+                str(meta.get("intent") or ""),
+                meta.get("rows"),
+            ):
+                st.session_state.chat_suggestions = []
+                _append("user", question)
+                _persist("user", question)
+                handle_chart_request(chart_kind=chart_kind)
+                return
+        except Exception:
+            pass
+
     # Wipe any chips from the previous turn the moment the user submits
     # something else (typed or chip-clicked). Prevents the old suggestions
     # from briefly hanging under the new bubble while the agent thinks.
@@ -339,7 +421,7 @@ def resolve_pending_question() -> None:
     st.session_state.chat_pending_question = None
 
 
-def handle_chart_request() -> None:
+def handle_chart_request(chart_kind: ChartKind = "pie") -> None:
     """Render the last chartable templated result as an inline image bubble."""
     from agent.chart_renderer import build_chart_png_b64, is_chartable
 
@@ -354,6 +436,7 @@ def handle_chart_request() -> None:
         str(meta.get("intent") or ""),
         list(meta.get("rows") or []),
         str(meta.get("question") or ""),
+        chart_kind=chart_kind,
     )
     if not built:
         return

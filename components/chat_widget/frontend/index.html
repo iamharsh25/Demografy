@@ -131,6 +131,113 @@
             font-size: 0.9rem;
             font-weight: 600;
         }
+
+        /* Empty-state welcome: short intro + expandable KPI reference */
+        .cw-welcome {
+            flex-shrink: 0;
+            background: #f3eeff;
+            border-radius: 12px;
+            padding: 10px 12px;
+            border: 1px solid #e8dcff;
+            max-height: min(58vh, 420px);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-height: 0;
+        }
+        .cw-welcome-intro {
+            font-size: 0.86rem;
+            line-height: 1.45;
+            color: #272d2d;
+            font-weight: 500;
+        }
+        .cw-welcome-intro strong {
+            display: block;
+            font-size: 0.95rem;
+            color: #5e17eb;
+            margin-bottom: 4px;
+            font-weight: 700;
+        }
+        .cw-welcome-intro p {
+            margin: 0;
+        }
+        .cw-welcome-details {
+            margin: 0;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.65);
+            border: 1px solid #eadfff;
+            min-height: 0;
+        }
+        .cw-welcome-summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 8px 10px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #5e17eb;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            user-select: none;
+        }
+        .cw-welcome-summary::-webkit-details-marker {
+            display: none;
+        }
+        .cw-welcome-summary::before {
+            content: "\25B8";
+            font-size: 0.75rem;
+            transition: transform 0.15s ease;
+            opacity: 0.85;
+        }
+        .cw-welcome-details[open] .cw-welcome-summary::before {
+            transform: rotate(90deg);
+        }
+        .cw-welcome-scroll {
+            max-height: min(38vh, 240px);
+            overflow-y: auto;
+            overflow-x: auto;
+            padding: 8px 10px 10px;
+            border-top: 1px solid #eadfff;
+            font-size: 0.76rem;
+            line-height: 1.4;
+            color: #374151;
+        }
+        .cw-welcome-list {
+            margin: 0 0 10px 1rem;
+            padding: 0;
+            color: #374151;
+        }
+        .cw-welcome-list li {
+            margin-bottom: 4px;
+        }
+        .cw-kpi-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.72rem;
+            margin: 0;
+        }
+        .cw-kpi-table th,
+        .cw-kpi-table td {
+            border: 1px solid #e5e7eb;
+            padding: 5px 6px;
+            text-align: left;
+            vertical-align: top;
+        }
+        .cw-kpi-table th {
+            background: #f9fafb;
+            color: #374151;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .cw-kpi-table td:first-child {
+            font-weight: 600;
+            color: #272d2d;
+            white-space: nowrap;
+        }
+        .cw-kpi-table code {
+            font-size: 0.68rem;
+            color: #5e17eb;
+        }
         .cw-thread {
             display: none;
             flex-direction: column;
@@ -158,12 +265,140 @@
             color: #272d2d;
             border-bottom-left-radius: 4px;
         }
-        .cw-msg img {
+        .cw-msg .cw-chart-wrap {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+            margin-top: 6px;
+            cursor: zoom-in;
+            border-radius: 10px;
+            outline: none;
+        }
+        .cw-msg .cw-chart-wrap:focus-visible {
+            box-shadow: 0 0 0 3px rgba(154, 102, 238, 0.55);
+        }
+        .cw-msg .cw-chart-wrap img {
             max-width: 100%;
             height: auto;
             display: block;
             border-radius: 8px;
-            margin-top: 6px;
+            vertical-align: middle;
+            user-select: none;
+            pointer-events: none;
+        }
+        .cw-msg .cw-chart-hint {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            padding: 4px 10px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: #fff;
+            background: rgba(39, 45, 45, 0.72);
+            border-radius: 999px;
+            pointer-events: none;
+            letter-spacing: 0.02em;
+        }
+
+        .cw-chart-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 2400;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            box-sizing: border-box;
+        }
+        .cw-chart-modal[hidden] {
+            display: none !important;
+        }
+        .cw-chart-modal-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(17, 24, 39, 0.62);
+            cursor: pointer;
+        }
+        .cw-chart-modal-panel {
+            position: relative;
+            z-index: 1;
+            max-width: min(960px, 96vw);
+            max-height: min(92vh, 900px);
+            background: #fff;
+            border-radius: 14px;
+            box-shadow: 0 24px 56px rgba(17, 24, 39, 0.35);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .cw-chart-modal-toolbar {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 12px 14px;
+            background: linear-gradient(135deg, #f3eeff 0%, #fdfbff 100%);
+            border-bottom: 1px solid #eadfff;
+        }
+        .cw-chart-modal-toolbar span {
+            font-size: 0.88rem;
+            font-weight: 700;
+            color: #272d2d;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+            flex: 1;
+        }
+        .cw-chart-modal-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .cw-chart-modal-actions button {
+            font-family: inherit;
+            font-size: 0.82rem;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            border: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .cw-chart-download {
+            padding: 7px 14px;
+            background: linear-gradient(135deg, #9a66ee, #5e17eb);
+            color: #fff;
+        }
+        .cw-chart-download:hover {
+            filter: brightness(1.05);
+        }
+        .cw-chart-close {
+            width: 34px;
+            height: 34px;
+            background: rgba(94, 23, 235, 0.12);
+            color: #5e17eb;
+            font-size: 1.25rem;
+            line-height: 1;
+        }
+        .cw-chart-close:hover {
+            background: rgba(94, 23, 235, 0.2);
+        }
+        .cw-chart-modal-body {
+            padding: 12px 14px 16px;
+            overflow: auto;
+            max-height: calc(92vh - 70px);
+            text-align: center;
+            background: #fafafa;
+        }
+        .cw-chart-modal-body img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(17, 24, 39, 0.08);
         }
         .cw-msg .cw-msg-text {
             white-space: pre-wrap;
@@ -364,7 +599,7 @@
 
 <div id="chat-widget" class="chat-widget">
     <div class="cw-header">
-        <div class="cw-title"><span class="cw-avatar">&#129302;</span>Demograpfy AI Agent</div>
+        <div class="cw-title"><span class="cw-avatar">&#129302;</span>Demografy AI Agent</div>
         <div class="cw-actions">
             <button id="cw-new" class="cw-new" type="button" aria-label="Start new chat" title="New chat">+</button>
             <button id="cw-history" class="cw-history" type="button" aria-label="View past chats" title="Past chats">
@@ -378,7 +613,80 @@
         </div>
     </div>
     <div class="cw-body">
-        <div id="cw-welcome" class="cw-bubble">Hi! I'm Demograpfy AI Agent. Ask me anything about Australian suburb data and I'll dig into the numbers for you.</div>
+        <div id="cw-welcome" class="cw-welcome">
+            <div class="cw-welcome-intro">
+                <strong>Demografy AI Agent</strong>
+                <p>
+                    Ask about Australian suburb areas (ABS SA2). Get rankings, averages, KPI values for a named suburb,
+                    definitions of metrics, or charts from your last result.
+                </p>
+            </div>
+            <details class="cw-welcome-details">
+                <summary class="cw-welcome-summary">
+                    What you can ask · What each metric measures
+                </summary>
+                <div class="cw-welcome-scroll">
+                    <ul class="cw-welcome-list">
+                        <li>Examples: top diverse suburbs in NSW, average prosperity in Victoria, diversity index in Forde, “what KPIs do you measure?”</li>
+                        <li>After a list or ranking answer, type <strong>pie chart</strong> or use <strong>Show as a chart?</strong> to visualise.</li>
+                    </ul>
+                    <table class="cw-kpi-table" aria-label="Metrics Demografy can discuss">
+                        <thead>
+                            <tr>
+                                <th scope="col">Metric</th>
+                                <th scope="col">What it measures</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Prosperity score</td>
+                                <td>Socioeconomic advantage and disadvantage for the area. Shown as an index from <strong>0–100</strong> (higher = more advantaged).</td>
+                            </tr>
+                            <tr>
+                                <td>Diversity index</td>
+                                <td>Cultural and linguistic diversity. Scale <strong>0–1</strong>; higher values mean more culturally diverse communities.</td>
+                            </tr>
+                            <tr>
+                                <td>Migration footprint</td>
+                                <td>Share of residents with overseas-born parents. Expressed as <strong>0–100%</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Learning level</td>
+                                <td>Educational attainment proxy (e.g. Year 12 or equivalent completion). <strong>0–100%</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Social housing</td>
+                                <td>Share of households in public or community housing. <strong>0–100%</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Home ownership (resident equity)</td>
+                                <td>Share of households that own outright or with a mortgage. <strong>0–100%</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Rental access</td>
+                                <td>Rental affordability proxy—share renting below a modest weekly rent threshold. <strong>0–100%</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Resident anchor (stability)</td>
+                                <td>Share of residents who lived at the same address five years earlier. <strong>0–100%</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Household mobility</td>
+                                <td>Households in transitional living situations. Index <strong>0–1</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Young families</td>
+                                <td>Share of residents aged 0–14 (young-family presence). <strong>0–100%</strong>.</td>
+                            </tr>
+                            <tr>
+                                <td>Population</td>
+                                <td>Estimated resident population for the area (headcount).</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+        </div>
         <div id="cw-thread" class="cw-thread"></div>
     </div>
     <div id="cw-input-wrap" class="cw-input-wrap">
@@ -396,6 +704,22 @@
         </div>
         <ul id="cw-history-list" class="cw-history-list"></ul>
         <div id="cw-history-empty" class="cw-history-empty" hidden>No past chats yet. Start one by asking a question.</div>
+    </div>
+</div>
+
+<div id="cw-chart-modal" class="cw-chart-modal" hidden role="dialog" aria-modal="true" aria-labelledby="cw-chart-modal-title">
+    <div id="cw-chart-modal-backdrop" class="cw-chart-modal-backdrop"></div>
+    <div class="cw-chart-modal-panel">
+        <div class="cw-chart-modal-toolbar">
+            <span id="cw-chart-modal-title">Chart</span>
+            <div class="cw-chart-modal-actions">
+                <button type="button" id="cw-chart-download" class="cw-chart-download">Download PNG</button>
+                <button type="button" id="cw-chart-close" class="cw-chart-close" aria-label="Close chart preview">&times;</button>
+            </div>
+        </div>
+        <div class="cw-chart-modal-body">
+            <img id="cw-chart-modal-img" src="" alt="Chart preview" />
+        </div>
     </div>
 </div>
 
@@ -437,6 +761,14 @@
     var inputWrap = document.getElementById("cw-input-wrap");
     var limitNote = document.getElementById("cw-limit-note");
     var limitText = document.getElementById("cw-limit-text");
+
+    var chartModal = document.getElementById("cw-chart-modal");
+    var chartModalBackdrop = document.getElementById("cw-chart-modal-backdrop");
+    var chartModalImg = document.getElementById("cw-chart-modal-img");
+    var chartModalTitle = document.getElementById("cw-chart-modal-title");
+    var chartModalClose = document.getElementById("cw-chart-close");
+    var chartModalDownload = document.getElementById("cw-chart-download");
+    var chartModalDataUrl = "";
 
     var isOpen = false;
     var isSplit = false;
@@ -534,6 +866,7 @@
     }
     function closeWidget() {
         if (!isOpen) return;
+        closeChartModal();
         isOpen = false;
         isSplit = false;
         widget.classList.remove("open");
@@ -595,6 +928,7 @@
     }
 
     function startNewChat() {
+        closeChartModal();
         // Optimistic local reset so the UI feels instant; Python will
         // confirm on the next render with empty messages.
         thread.innerHTML = "";
@@ -622,6 +956,7 @@
 
     function pickThread(threadId) {
         if (!threadId) return;
+        closeChartModal();
         // Reset locally so the thread we're switching to renders cleanly
         // when Python's next push arrives with the new messages.
         thread.innerHTML = "";
@@ -641,15 +976,103 @@
 
     // ---- DOM helpers --------------------------------------------------------
 
+    function sanitizeChartFilename(title) {
+        var raw = String(title || "demografy-chart")
+            .replace(/[\u0000-\u001f\\/:*?"<>|]+/g, "")
+            .replace(/\s+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .substring(0, 96);
+        if (!raw) raw = "demografy-chart";
+        return /\.png$/i.test(raw) ? raw : raw + ".png";
+    }
+
+    function closeChartModal() {
+        if (!chartModal || chartModal.hasAttribute("hidden")) return;
+        chartModal.setAttribute("hidden", "");
+        chartModalDataUrl = "";
+        if (chartModalImg) chartModalImg.src = "";
+        document.removeEventListener("keydown", onChartModalKeydown);
+    }
+
+    function onChartModalKeydown(e) {
+        if (e.key === "Escape") {
+            e.preventDefault();
+            closeChartModal();
+        }
+    }
+
+    function openChartModal(dataUrl, titleText) {
+        if (!chartModal || !chartModalImg || !dataUrl) return;
+        chartModalDataUrl = dataUrl;
+        chartModalImg.src = dataUrl;
+        chartModalImg.alt = String(titleText || "Chart preview").substring(0, 120);
+        if (chartModalTitle) {
+            chartModalTitle.textContent =
+                String(titleText || "Chart").trim().substring(0, 120) || "Chart";
+        }
+        chartModal.removeAttribute("hidden");
+        document.addEventListener("keydown", onChartModalKeydown);
+        setTimeout(function () {
+            if (chartModalClose) chartModalClose.focus();
+        }, 10);
+    }
+
+    if (chartModalBackdrop) {
+        chartModalBackdrop.addEventListener("click", closeChartModal);
+    }
+    if (chartModalClose) {
+        chartModalClose.addEventListener("click", closeChartModal);
+    }
+    if (chartModalDownload) {
+        chartModalDownload.addEventListener("click", function () {
+            if (!chartModalDataUrl) return;
+            var name = sanitizeChartFilename(
+                chartModalTitle ? chartModalTitle.textContent : "demografy-chart"
+            );
+            var a = document.createElement("a");
+            a.href = chartModalDataUrl;
+            a.download = name;
+            a.rel = "noopener";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
+    }
+
     function makeMsgNode(role, content, imageB64) {
         var div = document.createElement("div");
         div.className = "cw-msg " + (role === "user" ? "user" : "assistant");
         var text = String(content == null ? "" : content).trim();
         if (imageB64) {
+            var dataUrl = "data:image/png;base64," + String(imageB64);
+            var wrap = document.createElement("div");
+            wrap.className = "cw-chart-wrap";
+            wrap.setAttribute("role", "button");
+            wrap.setAttribute("tabindex", "0");
+            wrap.setAttribute(
+                "aria-label",
+                "Open chart preview and download"
+            );
             var img = document.createElement("img");
             img.alt = "Chart";
-            img.src = "data:image/png;base64," + String(imageB64);
-            div.appendChild(img);
+            img.src = dataUrl;
+            img.draggable = false;
+            wrap.appendChild(img);
+            var hint = document.createElement("span");
+            hint.className = "cw-chart-hint";
+            hint.textContent = "Click to enlarge";
+            wrap.appendChild(hint);
+            function openThisChart() {
+                openChartModal(dataUrl, text || "Demografy chart");
+            }
+            wrap.addEventListener("click", openThisChart);
+            wrap.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openThisChart();
+                }
+            });
+            div.appendChild(wrap);
         }
         if (text) {
             var span = document.createElement("div");

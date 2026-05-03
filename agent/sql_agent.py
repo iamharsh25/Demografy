@@ -310,11 +310,189 @@ def _home_ownership_state_average_intent(text: str) -> bool:
     return True
 
 
+_PLACE_TAIL_BLACKLIST = frozenset({
+    "suburb",
+    "suburbs",
+    "area",
+    "areas",
+    "sa2",
+    "sa3",
+    "the suburb",
+    "this suburb",
+    "that suburb",
+    "australia",
+    "nationwide",
+    "country",
+})
+
+_SINGLE_AREA_TOPN_RE = re.compile(r"\btop\s+\d+\b")
+
+
+def _extract_trailing_place_name(text: str) -> str | None:
+    """Return a place phrase after ``in`` / ``for`` / ``at`` near the end of the question."""
+    text = text.strip().rstrip("?").strip()
+    m = re.search(
+        r"\b(?:in|for|at)\s+([a-z0-9][a-z0-9\s\-']{1,68})\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    tail = " ".join(m.group(1).split()).strip()
+    if len(tail) < 2:
+        return None
+    tl = tail.lower()
+    if tl in _PLACE_TAIL_BLACKLIST or "suburbs" in tl.split():
+        return None
+    if tl in STATE_ALIASES:
+        return None
+    if tl in {s.lower() for s in STATE_ALIASES.values()}:
+        return None
+    return tail
+
+
+def _sanitize_like_fragment(raw: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9\s'\-]", "", raw).strip()
+    s = re.sub(r"\s+", " ", s)
+    return s[:72]
+
+
+def _resolve_single_area_metric(text: str) -> dict | None:
+    """Pick one KPI column when the user asks for a metric for a named area."""
+    if ("home ownership" in text or "resident equity" in text) and "compare" not in text:
+        return {"column": "kpi_6_val", "alias": "resident_equity", "kind": "percent"}
+    if "social housing" in text:
+        return {"column": "kpi_5_val", "alias": "social_housing_pct", "kind": "percent"}
+    if "migration" in text:
+        return {"column": "kpi_3_val", "alias": "migration_footprint", "kind": "percent"}
+    if "learning" in text or "education" in text or "year 12" in text:
+        return {"column": "kpi_4_val", "alias": "learning_level", "kind": "percent"}
+    if "young family" in text:
+        return {"column": "kpi_10_val", "alias": "young_family_presence", "kind": "percent"}
+    if "resident anchor" in text or ("stable" in text and "suburb" in text):
+        return {"column": "kpi_8_val", "alias": "resident_anchor", "kind": "percent"}
+    if "rental access" in text or "affordable" in text or "affordability" in text:
+        return {"column": "kpi_7_val", "alias": "rental_access", "kind": "percent"}
+    if "household mobility" in text:
+        return {"column": "kpi_9_val", "alias": "household_mobility", "kind": "decimal"}
+    if "population" in text and "growth" not in text:
+        return {"column": "population", "alias": "population", "kind": "int"}
+    if "prosperity" in text:
+        return {"column": "kpi_1_val", "alias": "prosperity_score", "kind": "index"}
+    if "diversity" in text or "diverse" in text:
+        return {"column": "kpi_2_val", "alias": "diversity_index", "kind": "diversity"}
+    return None
+
+
+def _is_kpi_overview_question(text: str) -> bool:
+    """Meta-questions about which KPIs exist and how they are measured."""
+    if len(text) > 320:
+        return False
+    triggers = (
+        "what kpis",
+        "which kpis",
+        "what kpi ",
+        "which kpi ",
+        "kpis do you",
+        "kpi do you",
+        "what metrics do you",
+        "which metrics do you",
+        "what measures do you",
+        "what data do you measure",
+        "what do you measure",
+        "how are kpi",
+        "how are the kpi",
+        "how are scores",
+        "how do you measure",
+        "what scores do you",
+        "list kpi",
+        "list of kpi",
+        "available kpi",
+        "explain the kpi",
+        "describe the kpi",
+        "tell me about kpi",
+        "what indicators",
+        "which indicators",
+        "what demografy measure",
+        "what does demografy measure",
+    )
+    if any(t in text for t in triggers):
+        return True
+    if ("kpi" in text or "metric" in text) and any(
+        w in text for w in ("measure", "measuring", "available", "offer", "track", "cover", "define")
+    ):
+        if any(w in text for w in ("what ", "which ", "how ", "list", "tell me", "explain")):
+            return True
+    return False
+
+
+def _is_single_area_metric_question(text: str) -> bool:
+    """True for ``what is prosperity in forde`` style questions (not rankings/lists)."""
+    if _SINGLE_AREA_TOPN_RE.search(text):
+        return False
+    if _is_ranking_request(text):
+        return False
+    if _resolve_single_area_metric(text) is None:
+        return False
+    if _extract_trailing_place_name(text) is None:
+        return False
+    return True
+
+
+def _kpi_overview_answer() -> str:
+    """Static explainer aligned with ``FEW_SHOT_PREFIX`` KPI definitions."""
+    return """Demografy summarises Australian Bureau of Statistics (ABS)–based suburb data at **SA2** level (what we call a “suburb” or area in chat).
+
+**How scores work**
+Most KPIs are percentages or indices derived from census-style inputs for residents in that SA2. Values are comparable across suburbs; higher or lower depends on the metric (see below).
+
+**KPIs you can ask about**
+• **Prosperity score** — Socioeconomic advantage and disadvantage (index **0–100**, higher = more advantaged).
+• **Diversity index** — Cultural and linguistic diversity (**0–1**, higher = more diverse).
+• **Migration footprint** — Share of residents with overseas-born parents (**0–100%**).
+• **Learning level** — Year 12 or equivalent attainment (**0–100%**).
+• **Social housing** — Share of households in public or community housing (**0–100%**).
+• **Home ownership (resident equity)** — Share of households owned outright or with a mortgage (**0–100%**).
+• **Rental access** — Affordability proxy: share renting below $450/week (**0–100%**).
+• **Resident anchor** — Stability: share of residents who lived at the same address 5+ years ago (**0–100%**).
+• **Household mobility** — Households in transitional situations (index **0–1**).
+• **Young families** — Share of residents aged 0–14 (**0–100%**).
+• **Population** — Estimated resident population (count).
+
+Ask for any of these **for a state, city, or suburb name** (e.g. “prosperity in Forde” or “top 5 diverse suburbs in NSW”)."""
+
+
 def _template_sql_for_question(question: str) -> tuple[str, str] | None:
     text = _normalise_question(question)
     state = _extract_state(text)
 
     is_diversity_question = "diversity" in text or "diverse" in text
+
+    place_raw = _extract_trailing_place_name(text)
+    metric_def = _resolve_single_area_metric(text)
+    if (
+        place_raw
+        and metric_def
+        and _is_single_area_metric_question(text)
+    ):
+        frag = _sanitize_like_fragment(place_raw)
+        if frag:
+            esc = frag.replace("'", "''")
+            col = metric_def["column"]
+            alias = metric_def["alias"]
+            filters = [
+                f"LOWER(sa2_name) LIKE LOWER('%{esc}%')",
+                f"{col} IS NOT NULL",
+                *_residential_filters(include_statistical_categories=True),
+            ]
+            if state:
+                filters.insert(0, f"state = '{state}'")
+            sql = f"""SELECT sa2_name, state, {col} AS {alias}
+FROM `demografy.prod_tables.a_master_view`
+WHERE {_where_clause(filters)}
+ORDER BY population DESC NULLS LAST
+LIMIT 5"""
+            return "single_area_metric", sql
 
     if is_diversity_question and "percentage" in text and state:
         threshold = _extract_number_after(text, ("above", "over", "greater than"), 0.7)
@@ -673,6 +851,9 @@ def _template_lead_in(intent: str, rows: list, question: str, state: str | None)
     if intent == "rental_access":
         return f"Most affordable rental access suburbs{geo}:"
 
+    if intent == "single_area_metric":
+        return f"SA2 areas matching your place name{geo}:"
+
     if intent == "ranked_metric":
         if "diversity" in q or "diverse" in q:
             return f"Here are the top {n} most diverse suburbs{geo}:"
@@ -698,6 +879,30 @@ def _template_lead_in(intent: str, rows: list, question: str, state: str | None)
     return f"Results for your question{geo}:"
 
 
+def _format_single_area_metric_cell(question: str, val: object) -> str:
+    q = (question or "").lower()
+    if val is None:
+        return "—"
+    if "population" in q and "kpi" not in q:
+        try:
+            return str(int(round(float(val))))
+        except (TypeError, ValueError):
+            return str(val)
+    if "diversity" in q or "diverse" in q:
+        try:
+            return f"{float(val):.2f} (0–1 scale; higher = more culturally diverse)"
+        except (TypeError, ValueError):
+            return str(val)
+    if "prosperity" in q:
+        return f"{_fmt_number(val)} (0–100 socioeconomic index)"
+    if "household mobility" in q:
+        try:
+            return f"{float(val):.2f} (0–1)"
+        except (TypeError, ValueError):
+            return str(val)
+    return _fmt_number(val, "%")
+
+
 def _format_template_answer(
     intent: str,
     rows: list,
@@ -705,6 +910,7 @@ def _format_template_answer(
     question: str,
     state: str | None,
 ) -> str:
+    q = (question or "").lower()
     lead = _template_lead_in(intent, rows, question, state)
 
     if not rows:
@@ -717,6 +923,13 @@ def _format_template_answer(
     if intent == "single_scalar":
         pct = "home ownership" in q or "resident equity" in q
         body = _fmt_number(rows[0][0], "%" if pct else "")
+        return f"{lead}\n\n{body}"
+
+    if intent == "single_area_metric":
+        body = "\n".join(
+            f"{i}. {row[0]} ({row[1]}): {_format_single_area_metric_cell(question, row[2])}"
+            for i, row in enumerate(rows, start=1)
+        )
         return f"{lead}\n\n{body}"
 
     if intent == "single_name":
@@ -893,6 +1106,10 @@ def ask(
     ``None`` for LLM answers.
     """
     global _agent
+
+    norm = _normalise_question(question)
+    if _is_kpi_overview_question(norm):
+        return _kpi_overview_answer(), None, None
 
     template_answer = _answer_template_question(question)
     if template_answer:

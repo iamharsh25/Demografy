@@ -67,6 +67,7 @@ This document describes what each important file and folder in the Demografy rep
 |------|------|
 | `db/bigquery_client.py` | BigQuery connection / helper used by the SQL agent path. |
 | `db/explore.py` | Ad-hoc exploration script (not part of the live app). |
+| `db/evaluate_bigquery_catalog.py` | Enumerates all datasets/tables/columns (and optional row counts) into `db/bigquery_catalog_snapshot.{md,json}` for planning richer SQL. |
 
 ---
 

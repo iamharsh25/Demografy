@@ -200,6 +200,18 @@ The app loads `.env` from the **Demografy directory** automatically (even if you
 - **Main analytical view:** `demografy.prod_tables.a_master_view` (and related ref tables as configured in the agent)  
 - **Coverage:** thousands of Australian SA2 suburbs  
 
+### Exploring other BigQuery tables
+
+The LangChain agent is restricted to **`a_master_view`** by default (`agent/sql_agent.py`). To **inventory every dataset/table/column** in your GCP project (so you can plan joins, extra dimensions, or benchmarks), run from the **Demografy** directory with credentials in `.env`:
+
+```bash
+python db/evaluate_bigquery_catalog.py
+# optional: row counts per base table (slower)
+python db/evaluate_bigquery_catalog.py --with-counts
+```
+
+This writes **`db/bigquery_catalog_snapshot.md`** and **`db/bigquery_catalog_snapshot.json`** (JSON is gitignored). Review the Markdown snapshot, then extend **`FEW_SHOT_PREFIX`** / **`include_tables`** only after you know join keys and allowed scopes.
+
 The chat surfaces metrics in **plain English**. Internally, KPI columns map roughly as follows (see `agent/prompts.py` for full agent context):
 
 | Column | Metric (user-facing name) | Typical range |
