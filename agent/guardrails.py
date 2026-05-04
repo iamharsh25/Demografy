@@ -105,6 +105,20 @@ Ask for any of these **for a state, city, or suburb name** (e.g. "prosperity in 
 def _is_metric_definition_question(text: str) -> bool:
     if not _metric_key_from_text(text):
         return False
+    # Numeric / geographic questions should reach SQL templates, not the static blurb
+    # (e.g. "What is the average prosperity score in NSW?" matches "what is" + prosperity).
+    if "average" in text or "median" in text:
+        return False
+    if re.search(r"\b(?:top|first)\s+\d+\b", text):
+        return False
+    if "compare" in text or "comparison" in text:
+        return False
+    if re.search(r"\bvs\.?\b", text) or " versus " in f" {text} ":
+        return False
+    if re.search(r"\bwhich\s+state\b", text) and re.search(
+        r"\b(?:highest|lowest|most|least|average|avg)\b", text
+    ):
+        return False
     triggers = (
         "what is", "what's", "criteria", "criterion", "definition", "define",
         "meaning", "mean", "means", "measured", "measure", "calculated",

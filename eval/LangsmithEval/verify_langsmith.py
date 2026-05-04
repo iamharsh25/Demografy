@@ -9,10 +9,10 @@ Prerequisites (in ``.env``)::
 
 Usage from repo root::
 
-    python eval/verify_langsmith.py              # list recent runs
-    python eval/verify_langsmith.py --smoke      # one ask() then list runs
+    python eval/LangsmithEval/verify_langsmith.py              # list recent runs
+    python eval/LangsmithEval/verify_langsmith.py --smoke      # one ask() then list runs
 
-After ``python eval/run_eval.py``, you should see new runs in the LangSmith UI
+After a golden or conversation eval run, you should see new runs in the LangSmith UI
 and in this script's output.
 """
 

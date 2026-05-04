@@ -90,10 +90,17 @@ def _chat_panel() -> None:
     limit_reached = is_limit_reached(tier, question_count) or cooldown_active
     cooldown_until_ms = int(float(cooldown_until) * 1000) if cooldown_until else 0
 
+    thinking_label = "Thinking..."
+    if st.session_state.get("chat_pending"):
+        thinking_label = str(
+            st.session_state.get("chat_pending_label") or "Thinking..."
+        )
+
     render_chat_widget(
         messages=st.session_state.get("chat_messages", []),
         pending=bool(st.session_state.get("chat_pending")),
         limit_reached=limit_reached,
+        thinking_label=thinking_label,
         threads=threads,
         active_thread_id=st.session_state.get("chat_thread_id"),
         suggestions=st.session_state.get("chat_suggestions", []),

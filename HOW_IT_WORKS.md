@@ -54,9 +54,10 @@ Demografy/
 │   └── rbac.py           ← The bouncer — checks user tier and enforces question limits
 │
 ├── eval/
-│   ├── golden_dataset.json ← 10 test questions with expected answers
-│   ├── run_eval.py         ← Runs all test questions and scores them automatically
-│   └── judge.py            ← Uses AI to score whether answers are correct
+│   ├── GoldenDatasetEval/  ← golden_dataset.json, run_eval.py, judge.py, results.json
+│   ├── LangsmithEval/      ← verify LangSmith workspace + langsmith_report.json
+│   ├── ConversationEval/   ← multi-turn scenarios, conversation_results.json
+│   └── guardrail_smoke.py  ← fast routing checks without BigQuery
 │
 ├── .streamlit/
 │   └── config.toml       ← Demografy brand colours and font settings

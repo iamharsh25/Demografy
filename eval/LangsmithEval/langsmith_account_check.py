@@ -7,7 +7,7 @@ to the key in ``.env``.
 
 Usage (from repo root)::
 
-    python eval/langsmith_account_check.py
+    python eval/LangsmithEval/langsmith_account_check.py
 
 Compare the printed **display name** and **workspace id** with the workspace
 switcher in the LangSmith UI (bottom-left or profile menu on smith.langchain.com).
@@ -62,7 +62,7 @@ def main() -> None:
         print()
     except Exception as exc:
         print(f"Could not read project {project!r}: {exc}")
-        print(f"Try: Tracing → switch workspace to match display name above.")
+        print("Try: Tracing → switch workspace to match display name above.")
 
 
 if __name__ == "__main__":

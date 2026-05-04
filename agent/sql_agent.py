@@ -36,6 +36,7 @@ from agent.kpis import DEFAULT_LIMIT, GEOGRAPHY_CLARIFICATION_CHIPS, USER_FACING
 from agent.prompts import FEW_SHOT_PREFIX
 from agent.templates import (
     _affirmative_followup_question,
+    _answer_deictic_suburbs_after_state_rank,
     _answer_previous_result_metric_question,
     _answer_template_question,
     _contextual_metric_followup_question,
@@ -45,6 +46,8 @@ from agent.templates import (
     _is_show_more_request,
     _needs_diversity_geography_clarification,
     _normalise_question,
+    _answer_pair_state_avg_compare_from_context,
+    _rewrite_learning_geography_followup,
     _show_more_answer,
     _template_followup_answer,
 )
@@ -166,21 +169,184 @@ def _strip_sql_from_answer(answer: str) -> str:
     return text.strip()
 
 
+def _sentence_leaks_sql_mechanics(sentence: str) -> bool:
+    """True if this sentence explains SQL/tool failures (should not reach end users)."""
+    t = sentence.lower()
+    if re.search(r"\b(?:the\s+)?previous\s+query\s+failed\b", t):
+        return True
+    if re.search(r"\bquery\s+failed\s+because\b", t) or re.search(r"\bthe\s+query\s+failed\b", t):
+        return True
+    if re.search(r"\bcannot\s+be\s+used\s+with\b", t) and re.search(
+        r"\b(?:order\s+by|union|limit)\b", t
+    ):
+        return True
+    if re.search(r"\bunion\s+all\b", t) and re.search(r"\border\s+by\b", t):
+        return True
+    if re.search(r"\border\s+by\b", t) and re.search(r"\blimit\b", t) and re.search(
+        r"\b(?:both\s+sides|each\s+query|two\s+queries)\b", t
+    ):
+        return True
+    if re.search(r"\bbigquery\b", t) and re.search(r"\b(?:error|exception|failed)\b", t):
+        return True
+    if re.search(r"\bsyntax\s+error\b", t) or re.search(r"\b(?:invalid|bad)\s+sql\b", t):
+        return True
+    if re.search(
+        r"\bi\s+need\s+to\s+combine\s+the\s+results\s+of\s+two\s+separate\s+queries\b", t
+    ):
+        return True
+    return False
+
+
+def _strip_sql_explanation_prose(text: str) -> str:
+    """Drop sentences/lines where the model explains SQL/tool failures to the user."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+
+    out_lines: list[str] = []
+    for line in raw.splitlines():
+        chunks = re.split(r"(?<=[.!?])\s+", line)
+        kept: list[str] = []
+        for chunk in chunks:
+            c = chunk.strip()
+            if not c:
+                continue
+            if _sentence_leaks_sql_mechanics(c):
+                continue
+            kept.append(c)
+        merged = " ".join(kept).strip()
+        if merged:
+            out_lines.append(merged)
+    result = "\n".join(out_lines).strip()
+    return result
+
+
+def strip_assistant_reply_for_ui(text: str) -> str:
+    """Strip SQL blocks, schema noise, and technical query-failure prose before UI/history."""
+    cleaned = _strip_sql_from_answer(text or "")
+    cleaned = _strip_sql_explanation_prose(cleaned)
+    from agent.conversation import sanitize_user_answer
+
+    return sanitize_user_answer(cleaned)
+
+
+def _should_try_llm_before_templates(
+    norm: str,
+    history: list[dict] | None,
+    context_meta: dict | None,
+) -> bool:
+    """Prefer the SQL agent (LLM) when there is conversational context.
+
+    Set ``DEMOGRAFY_TEMPLATE_FIRST=1`` to restore template-first ordering
+    (legacy behaviour) for debugging.
+    """
+    if os.getenv("DEMOGRAFY_TEMPLATE_FIRST", "").strip() == "1":
+        return False
+    if _is_kpi_overview_question(norm) or _is_metric_definition_question(norm):
+        return False
+    h = history or []
+    if len(h) >= 1:
+        return True
+    if context_meta and context_meta.get("sql") and not context_meta.get("clarification"):
+        return True
+    return False
+
+
+def _llm_sql_result_acceptable(answer: str, sql_query: str | None) -> bool:
+    text = (answer or "").strip()
+    if not text:
+        return False
+    if text.strip() == USER_FACING_UNANSWERABLE_REPLY.strip():
+        return False
+    return True
+
+
+def _invoke_llm_sql_agent(
+    question: str,
+    history: list[dict] | None,
+    context_meta: dict | None,
+    callbacks,
+) -> tuple[str, str | None, None]:
+    """Run the LangChain SQL agent with transcript + optional prior SQL."""
+    global _agent
+    if _agent is None:
+        _agent = _create_agent()
+
+    agent_input = question
+    context_parts: list[str] = []
+    if history:
+        from chat_history.context import build_context_block
+
+        context_block = build_context_block(history)
+        if context_block:
+            context_parts.append(context_block)
+    if context_meta and context_meta.get("sql"):
+        context_parts.append(
+            "Previous SQL query (adapt this to answer the follow-up when relevant):\n"
+            f"```sql\n{context_meta['sql']}\n```\n"
+        )
+    if context_parts:
+        full_context = "".join(context_parts)
+        if len(full_context) > 3000:
+            full_context = full_context[-3000:]
+        agent_input = full_context + f"Current question: {question}"
+
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output), redirect_stderr(captured_output):
+        result = _agent.invoke({"input": agent_input}, config={"callbacks": callbacks or []})
+
+    output_text = captured_output.getvalue()
+    sql_query = _extract_sql_from_intermediate_steps(result) or _extract_sql_from_text(output_text)
+
+    if sql_query:
+        try:
+            print("SQL Query:", sql_query)
+        except Exception:
+            pass
+
+    answer = (result.get("output") or "").strip()
+    answer = strip_assistant_reply_for_ui(answer)
+    return answer, sql_query, None
+
+
+def _is_vague_chat_format_request(norm: str) -> bool:
+    """UI/meta phrasing that should not hit the LLM with prior SQL context."""
+    # "convert to chat" is a common typo for "chart"; do not treat "convert to chart" as vague.
+    if "convert" in norm and "chat" in norm and "chart" not in norm:
+        return True
+    if "into the chat" in norm:
+        return True
+    return False
+
+
 def ask(
     question: str,
     callbacks=None,
     history: list[dict] | None = None,
     context_meta: dict | None = None,
 ) -> tuple[str, str | None, dict | None]:
-    """Answer a user question using fast-path layers before falling back to the LLM.
+    """Answer a user question with guardrails, then context-aware routing.
+
+    When there is **conversation context** (prior turns and/or a previous SQL
+    query), the **LangChain SQL agent (LLM) runs first** so it can interpret
+    follow-ups and build SQL from context. Deterministic **templates** remain as
+    a fallback for speed and reliability when the LLM returns nothing useful, or
+    for the first message in a thread (no prior context).
 
     Returns ``(answer, sql, meta)``. ``meta`` carries intent/rows for charting
     on template answers; ``None`` for LLM answers. A clarification meta dict
     (``{"clarification": True, ...}``) is returned when geography is required.
     """
-    global _agent
-
     norm = _normalise_question(question)
+
+    if _is_vague_chat_format_request(norm):
+        return (
+            "I can keep answers as short numbered lists or add a chart from the last numbers. "
+            "Say pie chart or bar chart, or use the chart suggestion under the reply when it appears. "
+            "Tell me if you want the list narrowed to one state.",
+            None,
+            None,
+        )
 
     if _is_schema_probe(norm):
         return (
@@ -199,6 +365,10 @@ def ask(
         result = _show_more_answer(context_meta)
         if result:
             return result
+
+    deictic_suburbs = _answer_deictic_suburbs_after_state_rank(question, context_meta)
+    if deictic_suburbs:
+        return deictic_suburbs
 
     if _is_kpi_overview_question(norm):
         return _kpi_overview_answer(), None, None
@@ -228,9 +398,26 @@ def ask(
             if template_answer:
                 return template_answer
 
+    tried_llm_primary = False
+    if _should_try_llm_before_templates(norm, history, context_meta):
+        tried_llm_primary = True
+        llm_answer, llm_sql, _ = _invoke_llm_sql_agent(question, history, context_meta, callbacks)
+        if _llm_sql_result_acceptable(llm_answer, llm_sql):
+            return llm_answer, llm_sql, None
+
     template_answer = _answer_template_question(question)
     if template_answer:
         return template_answer
+
+    rewritten_learning = _rewrite_learning_geography_followup(question, context_meta, history)
+    if rewritten_learning:
+        template_answer = _answer_template_question(rewritten_learning)
+        if template_answer:
+            return template_answer
+
+    pair_avg = _answer_pair_state_avg_compare_from_context(question, context_meta, history)
+    if pair_avg:
+        return pair_avg
 
     resolved_metric_followup = _contextual_metric_followup_question(question, history)
     if resolved_metric_followup:
@@ -251,42 +438,10 @@ def ask(
         )
         return clarify, None, _geography_clarification_meta()
 
-    if _agent is None:
-        _agent = _create_agent()
+    if not tried_llm_primary:
+        answer, sql_query, _meta = _invoke_llm_sql_agent(question, history, context_meta, callbacks)
+        if not answer:
+            answer = USER_FACING_UNANSWERABLE_REPLY
+        return answer, sql_query, None
 
-    agent_input = question
-    context_parts: list[str] = []
-    if history:
-        from chat_history.context import build_context_block
-        context_block = build_context_block(history)
-        if context_block:
-            context_parts.append(context_block)
-    if context_meta and context_meta.get("sql"):
-        context_parts.append(
-            f"Previous SQL query (you may modify this to answer the follow-up):\n"
-            f"```sql\n{context_meta['sql']}\n```\n"
-        )
-    if context_parts:
-        full_context = "".join(context_parts)
-        if len(full_context) > 3000:
-            full_context = full_context[-3000:]
-        agent_input = full_context + f"Current question: {question}"
-
-    captured_output = io.StringIO()
-    with redirect_stdout(captured_output), redirect_stderr(captured_output):
-        result = _agent.invoke({"input": agent_input}, config={"callbacks": callbacks or []})
-
-    output_text = captured_output.getvalue()
-    sql_query = _extract_sql_from_intermediate_steps(result) or _extract_sql_from_text(output_text)
-
-    if sql_query:
-        try:
-            print("SQL Query:", sql_query)
-        except Exception:
-            pass
-
-    answer = (result.get("output") or "").strip()
-    answer = _strip_sql_from_answer(answer)
-    if not answer:
-        answer = USER_FACING_UNANSWERABLE_REPLY
-    return answer, sql_query, None
+    return USER_FACING_UNANSWERABLE_REPLY, None, None

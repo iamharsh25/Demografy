@@ -237,6 +237,16 @@ def sanitize_user_answer(answer: str) -> str:
     sanitized = re.sub(r"`?a_master_view`?", "the Demografy dataset", sanitized, flags=re.IGNORECASE)
     sanitized = re.sub(r"`?kpi_\d+_(?:val|ind)`?", "this metric", sanitized, flags=re.IGNORECASE)
     sanitized = sanitized.replace("BigQuery-backed answers", "live data answers")
+    sanitized = re.sub(
+        r"(?i)\bcolumn\s+in\s+the\s+database\b",
+        "value in the Demografy data",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)\b(?:the\s+)?database\s+column\b",
+        "the published metric",
+        sanitized,
+    )
     return sanitized
 
 

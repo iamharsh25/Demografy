@@ -308,12 +308,13 @@ def generate_suggestions(
 
     is_recovery = (answer or "").strip() == USER_FACING_UNANSWERABLE_REPLY.strip()
 
-    prepend_chart = False
-    if not is_recovery and chart_meta and is_chartable(
-        str(chart_meta.get("intent") or ""),
-        chart_meta.get("rows"),
-    ):
-        prepend_chart = True
+    prepend_chart = bool(
+        chart_meta
+        and is_chartable(
+            str(chart_meta.get("intent") or ""),
+            chart_meta.get("rows"),
+        )
+    )
 
     llm_cap = MAX_CHIPS_WITH_CHART - 1 if prepend_chart else MAX_CHIPS
 

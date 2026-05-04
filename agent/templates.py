@@ -25,6 +25,344 @@ from agent.kpis import (
 _SINGLE_AREA_TOPN_RE = re.compile(r"\btop\s+\d+\b")
 
 
+def _prior_limit_from_sql(sql: str | None) -> int | None:
+    if not sql:
+        return None
+    m = re.search(r"\bLIMIT\s+(\d+)\b", sql, flags=re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def _prior_turn_was_learning_ranking(context_meta: dict | None, history: list[dict] | None) -> bool:
+    """True when the last answer was a learning-level (kpi_4) suburb ranking."""
+    sql = (context_meta or {}).get("sql") or ""
+    sl = sql.lower()
+    if "kpi_4_val" in sl or "learning_level" in sl:
+        return True
+    if not history:
+        return False
+    for rec in reversed(history[-6:]):
+        if rec.get("role") != "assistant":
+            continue
+        c = (rec.get("content") or "").lower()
+        if "learning level" in c or "schooling" in c or ("education" in c and "suburb" in c):
+            return True
+    return False
+
+
+def _extract_major_city_token(text: str) -> str | None:
+    t = _normalise_question(text)
+    for city in sorted(MAJOR_CITY_TO_STATE.keys(), key=len, reverse=True):
+        if re.search(rf"\b{re.escape(city)}\b", t):
+            return city
+    return None
+
+
+def _rewrite_learning_geography_followup(
+    question: str,
+    context_meta: dict | None,
+    history: list[dict] | None,
+) -> str | None:
+    """Turn 'top 5 for Melbourne' / 'what about NSW?' into an explicit learning query.
+
+    Short geography-only follow-ups omit metric words, so templates and
+    ``_contextual_metric_followup_question`` skip them; the LLM can then
+    return an empty answer. Rewriting restores the prior metric from context.
+    """
+    if not _prior_turn_was_learning_ranking(context_meta, history):
+        return None
+    text = _normalise_question(question)
+    if _mentions_learning(text):
+        return None
+    if len(text.split()) > 16:
+        return None
+
+    prior_sql = (context_meta or {}).get("sql") or ""
+    limit = _prior_limit_from_sql(prior_sql) or _extract_limit(text, DEFAULT_LIMIT)
+
+    city = _extract_major_city_token(text)
+    if city:
+        return f"Top {limit} suburbs by learning level in {city.title()}"
+
+    st = _extract_state(text)
+    if st:
+        return f"Top {limit} suburbs by learning level in {st}"
+
+    if any(tok in text.split() for tok in ("nsw", "vic", "qld", "sa", "wa", "tas", "act", "nt")):
+        st2 = _extract_state(text)
+        if st2:
+            return f"Top {limit} suburbs by learning level in {st2}"
+    return None
+
+
+# --- Pairwise state average (e.g. "compare between both" after Vic + NSW) ---
+
+KPI_AVG_PAIR_SPECS: dict[str, dict[str, str]] = {
+    "kpi_1_val": {"column": "kpi_1_val", "label": "prosperity score", "alias": "avg_value", "fmt": "index"},
+    "kpi_2_val": {"column": "kpi_2_val", "label": "diversity index", "alias": "avg_value", "fmt": "diversity"},
+    "kpi_3_val": {"column": "kpi_3_val", "label": "migration footprint", "alias": "avg_value", "fmt": "pct"},
+    "kpi_4_val": {"column": "kpi_4_val", "label": "learning level", "alias": "avg_value", "fmt": "pct"},
+    "kpi_5_val": {"column": "kpi_5_val", "label": "social housing", "alias": "avg_value", "fmt": "pct"},
+    "kpi_6_val": {"column": "kpi_6_val", "label": "home ownership", "alias": "avg_value", "fmt": "pct"},
+    "kpi_7_val": {"column": "kpi_7_val", "label": "rental access", "alias": "avg_value", "fmt": "pct"},
+    "kpi_8_val": {"column": "kpi_8_val", "label": "resident anchor", "alias": "avg_value", "fmt": "pct"},
+    "kpi_9_val": {"column": "kpi_9_val", "label": "household mobility", "alias": "avg_value", "fmt": "decimal"},
+    "kpi_10_val": {"column": "kpi_10_val", "label": "young family presence", "alias": "avg_value", "fmt": "pct"},
+}
+
+
+def _first_kpi_val_column_in_sql(sql: str | None) -> str | None:
+    if not sql:
+        return None
+    found = re.findall(r"\b(kpi_\d+_val)\b", sql, flags=re.IGNORECASE)
+    return found[0].lower() if found else None
+
+
+def _extract_states_ordered_in_text(text: str) -> list[str]:
+    """Full state names in left-to-right order (aliases and major cities)."""
+    t = _normalise_question(text)
+    hits: list[tuple[int, str]] = []
+    for alias, full in STATE_ALIASES.items():
+        for m in re.finditer(rf"\b{re.escape(alias)}\b", t, flags=re.IGNORECASE):
+            hits.append((m.start(), full))
+    for city, full in MAJOR_CITY_TO_STATE.items():
+        for m in re.finditer(rf"\b{re.escape(city)}\b", t, flags=re.IGNORECASE):
+            hits.append((m.start(), full))
+    hits.sort(key=lambda x: x[0])
+    out: list[str] = []
+    for _, st in hits:
+        if st not in out:
+            out.append(st)
+    return out
+
+
+def _chronological_unique_states_from_user_history(history: list[dict] | None) -> list[str]:
+    """States / city metros mentioned in user turns, in order (last mention wins position)."""
+    if not history:
+        return []
+    out: list[str] = []
+    for rec in history:
+        if rec.get("role") != "user":
+            continue
+        content = (rec.get("content") or "")
+        t = _normalise_question(content)
+        st = _extract_state(t)
+        added: str | None = None
+        if st:
+            added = st
+        else:
+            for city, full in sorted(MAJOR_CITY_TO_STATE.items(), key=lambda x: len(x[0]), reverse=True):
+                if re.search(rf"\b{re.escape(city)}\b", t, flags=re.IGNORECASE):
+                    added = full
+                    break
+        if added:
+            if added in out:
+                out.remove(added)
+            out.append(added)
+    return out
+
+
+def _states_pair_for_compare(text: str, history: list[dict] | None) -> tuple[str, str] | None:
+    text_states = _extract_states_ordered_in_text(text)
+    if len(text_states) >= 2:
+        return (text_states[-2], text_states[-1])
+    hist = _chronological_unique_states_from_user_history(history)
+    if len(hist) >= 2:
+        return (hist[-2], hist[-1])
+    return None
+
+
+def _is_pairwise_comparison_followup(text: str) -> bool:
+    """Short / deictic comparison that often omits metric and state names."""
+    t = _normalise_question(text)
+    if "home ownership" in t and "rental access" in t:
+        return False
+    has_cmp = any(w in t for w in ("compare", "comparison", "versus")) or " vs " in t
+    has_diff = "difference" in t and "between" in t
+    if not has_cmp and not has_diff:
+        return False
+    if len(_extract_states_ordered_in_text(t)) >= 2:
+        return True
+    deictic = (
+        "between both",
+        "compare both",
+        "the two",
+        "these two",
+        "those two",
+        "each other",
+        "two states",
+    )
+    if any(d in t for d in deictic):
+        return True
+    if " both" in f" {t} " or t.startswith("both ") or " both?" in f" {t}":
+        if "compare" in t or "difference" in t or "versus" in t or " vs " in t:
+            return True
+    if has_diff and len(t.split()) <= 12:
+        return True
+    return False
+
+
+def _metric_spec_for_explicit_pair_question(text: str) -> dict[str, str] | None:
+    """Resolve KPI for explicit two-state average wording (diversity is not in RANKABLE_METRICS)."""
+    if "diversity" in text or "diverse" in text:
+        return KPI_AVG_PAIR_SPECS["kpi_2_val"]
+    m = _rankable_metric(text)
+    if m:
+        return KPI_AVG_PAIR_SPECS.get(m["column"])
+    if "social housing" in text:
+        return KPI_AVG_PAIR_SPECS["kpi_5_val"]
+    if "rental access" in text or re.search(r"\brental\b", text):
+        return KPI_AVG_PAIR_SPECS["kpi_7_val"]
+    if _mentions_prosperity(text):
+        return KPI_AVG_PAIR_SPECS["kpi_1_val"]
+    if _mentions_learning(text):
+        return KPI_AVG_PAIR_SPECS["kpi_4_val"]
+    if "home ownership" in text or "resident equity" in text:
+        return KPI_AVG_PAIR_SPECS["kpi_6_val"]
+    return None
+
+
+def _is_explicit_two_state_avg_comparison(text: str) -> bool:
+    """True for standalone compare / vs / which-is-higher between two named states."""
+    if "home ownership" in text and "rental access" in text:
+        return False
+    if "compare" in text or "comparison" in text:
+        return True
+    if re.search(r"\bvs\.?\b", text):
+        return True
+    if " versus " in f" {text} ":
+        return True
+    if any(
+        p in text
+        for p in (
+            "which is higher",
+            "which has higher",
+            "which is lower",
+            "which has lower",
+        )
+    ):
+        return True
+    if "difference" in text and "between" in text:
+        return True
+    return False
+
+
+def _metric_spec_for_pair_compare(
+    question: str,
+    context_meta: dict | None,
+    history: list[dict] | None,
+) -> dict[str, str] | None:
+    """Pick KPI column: explicit words in question > prior SQL > assistant wording."""
+    t = _normalise_question(question)
+    explicit = _metric_spec_for_explicit_pair_question(t)
+    if explicit:
+        return explicit
+    sql = (context_meta or {}).get("sql") or ""
+    col = _first_kpi_val_column_in_sql(sql)
+    if col and col in KPI_AVG_PAIR_SPECS:
+        return KPI_AVG_PAIR_SPECS[col]
+    if not history:
+        return KPI_AVG_PAIR_SPECS.get("kpi_4_val")
+    for rec in reversed(history[-6:]):
+        if rec.get("role") != "assistant":
+            continue
+        c = (rec.get("content") or "").lower()
+        if "prosperity" in c or "socioeconomic" in c:
+            return KPI_AVG_PAIR_SPECS["kpi_1_val"]
+        if "diversity" in c or "diverse" in c:
+            return KPI_AVG_PAIR_SPECS["kpi_2_val"]
+        if "migration" in c:
+            return KPI_AVG_PAIR_SPECS["kpi_3_val"]
+        if "learning level" in c or ("education" in c and "suburb" in c) or "schooling" in c:
+            return KPI_AVG_PAIR_SPECS["kpi_4_val"]
+        if "young family" in c:
+            return KPI_AVG_PAIR_SPECS["kpi_10_val"]
+        if "rental access" in c or "affordab" in c:
+            return KPI_AVG_PAIR_SPECS["kpi_7_val"]
+        if "home ownership" in c or "resident equity" in c:
+            return KPI_AVG_PAIR_SPECS["kpi_6_val"]
+    return KPI_AVG_PAIR_SPECS.get("kpi_4_val")
+
+
+def _sql_two_state_average(column: str, alias: str, s1: str, s2: str) -> str:
+    e1 = str(s1).replace("'", "''")
+    e2 = str(s2).replace("'", "''")
+    return f"""SELECT state, ROUND(AVG({column}), 4) AS {alias}
+FROM `demografy.prod_tables.a_master_view`
+WHERE state IN ('{e1}', '{e2}')
+  AND {column} IS NOT NULL
+  AND sa2_name NOT LIKE '%Migratory%'
+  AND sa2_name NOT LIKE '%No usual address%'
+  AND sa2_name NOT LIKE '%Offshore%'
+  AND sa2_name NOT LIKE '%Industrial%'
+  AND sa2_name NOT LIKE '%Military%'
+  AND population > 100
+GROUP BY state
+ORDER BY {alias} DESC
+LIMIT 2;"""
+
+
+def _format_pair_state_avg_cell(spec: dict[str, str], val: object) -> str:
+    fmt = spec.get("fmt") or "pct"
+    if fmt == "pct":
+        return _fmt_number(val, "%")
+    if fmt == "diversity":
+        try:
+            return f"{float(val):.4f}".rstrip("0").rstrip(".")
+        except (TypeError, ValueError):
+            return str(val)
+    if fmt == "decimal":
+        try:
+            return f"{float(val):.2f}"
+        except (TypeError, ValueError):
+            return str(val)
+    return _fmt_number(val, "")
+
+
+def _answer_pair_state_avg_compare_from_context(
+    question: str,
+    context_meta: dict | None,
+    history: list[dict] | None,
+) -> tuple[str, str, dict] | None:
+    """Resolve vague two-way comparisons using recent geography + inferred metric."""
+    text = _normalise_question(question)
+    if not _is_pairwise_comparison_followup(text):
+        return None
+    pair = _states_pair_for_compare(text, history)
+    if not pair:
+        return None
+    s1, s2 = pair
+    spec = _metric_spec_for_pair_compare(question, context_meta, history)
+    if not spec:
+        return None
+    col = spec["column"]
+    sql = _sql_two_state_average(col, spec["alias"], s1, s2)
+    from db.bigquery_client import run_query
+
+    rows = _rows_from_dataframe(run_query(sql))
+    display_q = f"Compare average {spec['label']} between {s1} and {s2}"
+    lead = _template_lead_in("pair_state_avg", rows, display_q, None)
+    if not rows:
+        empty_meta = _template_meta("pair_state_avg", sql, rows, display_q, None)
+        empty_meta.update({"metric_label": spec["label"], "pair_states": [s1, s2], "kpi_column": col})
+        return f"{lead}\n\nNo aggregate values found for those states.", sql, empty_meta
+    body = "\n".join(
+        f"{i}. {row[0]}: {_format_pair_state_avg_cell(spec, row[1])}"
+        for i, row in enumerate(rows, start=1)
+    )
+    answer = f"{lead}\n\n{body}"
+    meta = {
+        "intent": "pair_state_avg",
+        "sql": sql,
+        "rows": rows,
+        "question": display_q,
+        "state": None,
+        "metric_label": spec["label"],
+        "pair_states": [s1, s2],
+        "kpi_column": col,
+    }
+    return answer, sql, meta
+
+
 # ---------------------------------------------------------------------------
 # Text normalisation and extraction
 # ---------------------------------------------------------------------------
@@ -87,6 +425,78 @@ def _wants_national_scope(text: str) -> bool:
             "whole country", "country wide", "countrywide",
         )
     )
+
+
+_STATE_LEVEL_RE = re.compile(
+    r"\b(?:australian\s+)?states?\b|\bby\s+state\b|\bper\s+state\b|\beach\s+state\b",
+    re.IGNORECASE,
+)
+
+
+_EACH_STATE_AVG_RE = re.compile(
+    r"\b(?:for\s+)?each\s+state\b|\bevery\s+state\b|\ball\s+states\b|"
+    r"\bper\s+state\b|\bby\s+state\b|\bach\s+state\b",
+    re.IGNORECASE,
+)
+
+
+def _each_state_average_learning_aggregate_intent(text: str) -> bool:
+    """AVG learning/education grouped by state (not a suburb top-N list)."""
+    if not _mentions_learning(text):
+        return False
+    if any(w in text for w in ("suburb", "suburbs", "sa2")):
+        return False
+    if not ("average" in text or "avg" in text or "mean" in text):
+        return False
+    return bool(_EACH_STATE_AVG_RE.search(text))
+
+
+def _best_suburb_in_top_learning_state_intent(text: str) -> bool:
+    """Best SA2 for learning in the state with the highest average learning (colloquial phrasing)."""
+    if "suburb" not in text:
+        return False
+    if _extract_state(text):
+        return False
+    learning_ok = _mentions_learning(text) or bool(
+        re.search(r"\btop\s+state\b", text) and ("best" in text or "top" in text)
+    )
+    if not learning_ok:
+        return False
+    if any(
+        p in text
+        for p in (
+            "highest average",
+            "best state",
+            "leading state",
+            "which state has the highest",
+            "state with the highest",
+        )
+    ):
+        return True
+    if re.search(r"\btop\s+state\b.*\bsuburb", text):
+        return True
+    return False
+
+
+def _state_level_diversity_average_rank_intent(text: str) -> bool:
+    """User wants states ranked by average diversity (SA2 aggregate), not a suburb list."""
+    if "diversity" not in text and "diverse" not in text:
+        return False
+    if any(w in text for w in ("suburb", "suburbs", "sa2")):
+        return False
+    if not _STATE_LEVEL_RE.search(text):
+        return False
+    if "average" in text or "avg" in text or "mean" in text:
+        return True
+    if "which" in text and any(w in text for w in ("highest", "most", "lowest", "least")):
+        return True
+    if (
+        "what" in text
+        and _STATE_LEVEL_RE.search(text)
+        and any(w in text for w in ("highest", "most", "lowest", "least"))
+    ):
+        return True
+    return False
 
 
 def _diversity_suburb_list_intent(text: str) -> bool:
@@ -258,6 +668,14 @@ def _template_sql_for_question(question: str) -> tuple[str, str] | None:
     state = _extract_state(text)
     is_diversity_question = "diversity" in text or "diverse" in text
 
+    ordered_states = _extract_states_ordered_in_text(text)
+    if len(ordered_states) >= 2 and _is_explicit_two_state_avg_comparison(text):
+        pair_spec = _metric_spec_for_explicit_pair_question(text)
+        if pair_spec:
+            s1, s2 = ordered_states[-2], ordered_states[-1]
+            sql = _sql_two_state_average(pair_spec["column"], pair_spec["alias"], s1, s2)
+            return "pair_state_avg", sql
+
     place_raw = _extract_trailing_place_name(text)
     metric_def = _resolve_single_area_metric(text)
     if place_raw and metric_def and _is_single_area_metric_question(text):
@@ -288,6 +706,17 @@ FROM `demografy.prod_tables.a_master_view`
 WHERE {_where_clause(filters)}
 LIMIT 1;"""
         return "diversity_percentage", sql
+
+    if _state_level_diversity_average_rank_intent(text):
+        order = "ASC" if any(w in text for w in ("lowest", "least")) else "DESC"
+        sql = f"""SELECT state, ROUND(AVG(kpi_2_val), 4) AS avg_diversity_index
+FROM `demografy.prod_tables.a_master_view`
+WHERE kpi_2_val IS NOT NULL
+  AND state NOT IN ('Australian Capital Territory', 'Northern Territory', 'Other Territories')
+GROUP BY state
+ORDER BY avg_diversity_index {order}
+LIMIT 1;"""
+        return "single_name", sql
 
     if is_diversity_question and _diversity_suburb_list_intent(text):
         limit = _extract_limit(text, DEFAULT_LIMIT)
@@ -445,6 +874,50 @@ ORDER BY kpi_3_val DESC
 LIMIT {limit};"""
         return "ranked_percent", sql
 
+    if _each_state_average_learning_aggregate_intent(text):
+        sql = """SELECT state, ROUND(AVG(kpi_4_val), 2) AS avg_learning_level
+FROM `demografy.prod_tables.a_master_view`
+WHERE kpi_4_val IS NOT NULL
+  AND sa2_name NOT LIKE '%Migratory%'
+  AND sa2_name NOT LIKE '%No usual address%'
+  AND sa2_name NOT LIKE '%Offshore%'
+  AND sa2_name NOT LIKE '%Industrial%'
+  AND sa2_name NOT LIKE '%Military%'
+  AND population > 100
+GROUP BY state
+ORDER BY avg_learning_level DESC
+LIMIT 10;"""
+        return "state_learning_avg_list", sql
+
+    if _best_suburb_in_top_learning_state_intent(text):
+        sql = """WITH top_state AS (
+  SELECT state
+  FROM `demografy.prod_tables.a_master_view`
+  WHERE kpi_4_val IS NOT NULL
+    AND sa2_name NOT LIKE '%Migratory%'
+    AND sa2_name NOT LIKE '%No usual address%'
+    AND sa2_name NOT LIKE '%Offshore%'
+    AND sa2_name NOT LIKE '%Industrial%'
+    AND sa2_name NOT LIKE '%Military%'
+    AND population > 100
+  GROUP BY state
+  ORDER BY AVG(kpi_4_val) DESC
+  LIMIT 1
+)
+SELECT m.sa2_name, m.state, m.kpi_4_val AS learning_level
+FROM `demografy.prod_tables.a_master_view` m
+INNER JOIN top_state t ON m.state = t.state
+WHERE m.kpi_4_val IS NOT NULL
+  AND m.sa2_name NOT LIKE '%Migratory%'
+  AND m.sa2_name NOT LIKE '%No usual address%'
+  AND m.sa2_name NOT LIKE '%Offshore%'
+  AND m.sa2_name NOT LIKE '%Industrial%'
+  AND m.sa2_name NOT LIKE '%Military%'
+  AND m.population > 100
+ORDER BY m.kpi_4_val DESC
+LIMIT 1;"""
+        return "best_suburb_top_learning_state", sql
+
     metric = _rankable_metric(text)
     if metric and (_is_ranking_request(text) or state or _wants_national_scope(text)):
         limit = _extract_limit(text, DEFAULT_LIMIT)
@@ -512,9 +985,33 @@ def _template_lead_in(intent: str, rows: list, question: str, state: str | None)
             return f"Average home ownership (resident equity){geo}:"
         return f"Result for your query{geo}:"
     if intent == "single_name":
+        if "diversity" in q or "diverse" in q:
+            if "lowest" in q or "least" in q:
+                return "The state with the lowest average diversity index is:"
+            return "The state with the highest average diversity index is:"
         return "The top state for this measure is:"
     if intent == "diversity_percentage":
         return f"Share of suburbs with high diversity{geo}:"
+    if intent == "best_suburb_top_learning_state":
+        return "The suburb with the highest learning level in the top-ranked state (by average learning) is:"
+    if intent == "state_learning_avg_list":
+        return "Average learning level (education) by state:"
+    if intent == "pair_state_avg":
+        if "prosperity" in q:
+            return "Comparison of average prosperity score between the two states:"
+        if "diversity" in q or "diverse" in q:
+            return "Comparison of average diversity index between the two states:"
+        if "migration" in q:
+            return "Comparison of average migration footprint between the two states:"
+        if "learning" in q or "education" in q or "school" in q:
+            return "Comparison of average learning level between the two states:"
+        if "young family" in q:
+            return "Comparison of average young family presence between the two states:"
+        if "rental" in q or "affordab" in q:
+            return "Comparison of average rental access between the two states:"
+        if "home ownership" in q or "resident equity" in q:
+            return "Comparison of average home ownership between the two states:"
+        return "Comparison of average values between the two states:"
     if intent == "state_comparison":
         return "Home ownership and rental access by state:"
     if intent == "young_family_learning":
@@ -591,10 +1088,44 @@ def _format_template_answer(intent: str, rows: list, *, question: str, state: st
         return f"{lead}\n\n{body}"
 
     if intent == "single_name":
-        return f"{lead}\n\n{rows[0][0]}"
+        row = rows[0]
+        if len(row) >= 2:
+            if _mentions_learning(q):
+                return f"{lead}\n\n{row[0]} ({_fmt_number(row[1], '%')} average learning level)"
+            if "diversity" in q or "diverse" in q:
+                div_spec = KPI_AVG_PAIR_SPECS["kpi_2_val"]
+                return f"{lead}\n\n{row[0]} ({_format_pair_state_avg_cell(div_spec, row[1])} average diversity index)"
+        return f"{lead}\n\n{row[0]}"
 
     if intent == "diversity_percentage":
         return f"{lead}\n\n{_fmt_number(rows[0][0], '%')}"
+
+    if intent == "state_learning_avg_list":
+        body = "\n".join(
+            f"{i}. {row[0]}: {_fmt_number(row[1], '%')}"
+            for i, row in enumerate(rows, start=1)
+        )
+        return f"{lead}\n\n{body}"
+
+    if intent == "pair_state_avg":
+        spec = _metric_spec_for_explicit_pair_question(q)
+        if not rows:
+            body = "No aggregate values found for those states."
+        elif spec:
+            body = "\n".join(
+                f"{i}. {row[0]}: {_format_pair_state_avg_cell(spec, row[1])}"
+                for i, row in enumerate(rows, start=1)
+            )
+        else:
+            body = "\n".join(f"{i}. {row[0]}: {row[1]}" for i, row in enumerate(rows, start=1))
+        return f"{lead}\n\n{body}"
+
+    if intent == "best_suburb_top_learning_state":
+        if not rows:
+            return f"{lead}\n\nNo matching suburb found."
+        r = rows[0]
+        body = f"{_area_label(r)}: {_fmt_number(r[2], '%')}"
+        return f"{lead}\n\n{body}"
 
     if intent == "state_comparison":
         body = "\n".join(
@@ -717,7 +1248,54 @@ def _answer_template_question(question: str) -> tuple[str, str, dict] | None:
     rows = _rows_from_dataframe(run_query(sql))
     answer = _format_template_answer(intent, rows, question=question, state=state)
     meta = _template_meta(intent, sql, rows, question, state)
+    if intent == "pair_state_avg":
+        spec = _metric_spec_for_explicit_pair_question(text_norm)
+        ordered = _extract_states_ordered_in_text(text_norm)
+        if spec and len(ordered) >= 2:
+            meta = {
+                **meta,
+                "metric_label": spec["label"],
+                "pair_states": [ordered[-2], ordered[-1]],
+                "kpi_column": spec["column"],
+            }
     return answer, sql, meta
+
+
+def _answer_deictic_suburbs_after_state_rank(
+    question: str,
+    context_meta: dict | None,
+) -> tuple[str, str, dict] | None:
+    """After ``single_name`` diversity state winner, resolve 'top suburbs there'."""
+    if not context_meta or context_meta.get("intent") != "single_name":
+        return None
+    prev_q = _normalise_question(context_meta.get("question") or "")
+    if "diversity" not in prev_q and "diverse" not in prev_q:
+        return None
+    text = _normalise_question(question)
+    if "suburb" not in text and "suburbs" not in text:
+        return None
+    if not any(
+        needle in text
+        for needle in (
+            "there",
+            "that state",
+            "this state",
+            "in that state",
+            "from that state",
+        )
+    ):
+        return None
+
+    rows = context_meta.get("rows") or []
+    if not rows or not isinstance(rows[0], (list, tuple)) or not rows[0]:
+        return None
+    winning_state = str(rows[0][0]).strip()
+    if not winning_state:
+        return None
+
+    limit = _extract_limit(text, DEFAULT_LIMIT)
+    rewritten = f"Top {limit} most diverse suburbs in {winning_state}"
+    return _answer_template_question(rewritten)
 
 
 # ---------------------------------------------------------------------------

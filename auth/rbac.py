@@ -14,10 +14,22 @@ Tiers:
 No passwords — login is by user_id only (as per project spec).
 """
 
+import os
 import time
 from typing import Optional
 
 from db.bigquery_client import run_query
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(str(raw).strip(), 10)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 # Question limits for each tier
 TIER_LIMITS = {
@@ -35,8 +47,9 @@ TIER_WARNINGS = {
 
 # Length of the post-limit cooldown. After it elapses the engine resets
 # ``question_count`` to zero so the user gets a fresh "mini-session"
-# without us mutating tier limits. Tunable via this single constant.
-COOLDOWN_SECONDS = 30
+# without us mutating tier limits. Override with ``SESSION_COOLDOWN_SECONDS``
+# in ``.env`` (see ``.env.template``).
+COOLDOWN_SECONDS = _env_positive_int("SESSION_COOLDOWN_SECONDS", 30)
 
 
 def get_user(user_id: str) -> dict | None:

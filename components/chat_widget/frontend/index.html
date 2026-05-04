@@ -260,19 +260,59 @@
             line-height: 1.45;
             max-width: 88%;
             word-wrap: break-word;
-            white-space: pre-wrap;
         }
         .cw-msg.user {
             align-self: flex-end;
             background: linear-gradient(135deg, #9a66ee, #5e17eb);
             color: #fff;
             border-bottom-right-radius: 4px;
+            white-space: pre-wrap;
         }
         .cw-msg.assistant {
             align-self: flex-start;
             background: #f3eeff;
             color: #272d2d;
             border-bottom-left-radius: 4px;
+        }
+        .cw-msg.assistant .cw-msg-text {
+            white-space: normal;
+        }
+        .cw-msg.assistant .cw-msg-text p {
+            margin: 0.4em 0;
+        }
+        .cw-msg.assistant .cw-msg-text p:first-child { margin-top: 0; }
+        .cw-msg.assistant .cw-msg-text p:last-child { margin-bottom: 0; }
+        .cw-msg.assistant .cw-msg-text ul,
+        .cw-msg.assistant .cw-msg-text ol {
+            margin: 0.35em 0 0.35em 1.15em;
+            padding-left: 0.25em;
+        }
+        .cw-msg.assistant .cw-msg-text li { margin: 0.18em 0; }
+        .cw-msg.assistant .cw-msg-text strong,
+        .cw-msg.assistant .cw-msg-text b { font-weight: 600; color: #1a1f1f; }
+        .cw-msg.assistant .cw-msg-text code {
+            font-size: 0.82em;
+            padding: 0.08em 0.28em;
+            border-radius: 4px;
+            background: rgba(94, 23, 235, 0.08);
+            color: #4c1d95;
+        }
+        .cw-msg.assistant .cw-msg-text pre {
+            margin: 0.45em 0;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(39, 45, 45, 0.06);
+            overflow-x: auto;
+            font-size: 0.82em;
+        }
+        .cw-msg.assistant .cw-msg-text pre code {
+            background: transparent;
+            padding: 0;
+        }
+        .cw-msg.assistant .cw-msg-text a {
+            color: #5e17eb;
+            text-decoration: underline;
+            text-underline-offset: 2px;
         }
         .cw-msg .cw-chart-wrap {
             position: relative;
@@ -642,6 +682,8 @@
         }
         .cw-copy-ok.visible { opacity: 1; }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -830,7 +872,6 @@
     var lastThreadsKey = "";  // signature of the threads array we last rendered
     var lastActiveThreadId = ""; // id of the thread we last reconciled to
     var historyVisible = false;
-    var resetOnNextOpen = false;
     var MODE_STORAGE_KEY = "demografy_chat_widget_mode_v1";
 
     function persistWidgetMode() {
@@ -967,27 +1008,25 @@
             closeWidget();
             return;
         }
-        if (resetOnNextOpen) {
-            resetOnNextOpen = false;
-            thread.innerHTML = "";
-            renderedMsgCount = 0;
-            showWelcome();
-            hideHistoryPanel();
-            if (input) {
-                input.disabled = false;
-                input.value = "";
-                input.placeholder = "Ask about Australian suburb data...";
-            }
-            if (sendBtn) sendBtn.disabled = false;
-            send(SET_VALUE, {
-                value: { action: "new_chat", ts: Date.now() },
-                dataType: "json"
-            });
+        // New server-side thread every time the panel opens from the FAB
+        // (login already starts fresh; this covers reopen after any close).
+        thread.innerHTML = "";
+        renderedMsgCount = 0;
+        showWelcome();
+        hideHistoryPanel();
+        if (input) {
+            input.disabled = false;
+            input.value = "";
+            input.placeholder = "Ask about Australian suburb data...";
         }
+        if (sendBtn) sendBtn.disabled = false;
+        send(SET_VALUE, {
+            value: { action: "new_chat", ts: Date.now() },
+            dataType: "json"
+        });
         openWidget();
     });
     closeBtn.addEventListener("click", function () {
-        resetOnNextOpen = true;
         closeWidget();
     });
     expandBtn.addEventListener("click", toggleSplit);
@@ -1119,6 +1158,37 @@
         });
     }
 
+    function cwRenderAssistantMarkdown(markdown) {
+        var md = String(markdown == null ? "" : markdown).trim();
+        if (!md) return null;
+        if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
+            return null;
+        }
+        try {
+            if (typeof marked.setOptions === "function") {
+                marked.setOptions({ breaks: true, gfm: true });
+            }
+            var html = typeof marked.parse === "function" ? marked.parse(md) : marked(md);
+            html = DOMPurify.sanitize(html, {
+                ALLOWED_TAGS: [
+                    "p", "br", "strong", "em", "b", "i", "ul", "ol", "li",
+                    "code", "pre", "a", "h1", "h2", "h3", "h4", "blockquote", "hr", "span",
+                ],
+                ALLOWED_ATTR: ["href", "target", "rel", "class"],
+            });
+            var wrap = document.createElement("div");
+            wrap.innerHTML = html;
+            var links = wrap.querySelectorAll("a[href]");
+            for (var li = 0; li < links.length; li++) {
+                links[li].setAttribute("rel", "noopener noreferrer");
+                links[li].setAttribute("target", "_blank");
+            }
+            return wrap.innerHTML;
+        } catch (_e) {
+            return null;
+        }
+    }
+
     function makeMsgNode(role, content, imageB64) {
         var frag = document.createDocumentFragment();
         var div = document.createElement("div");
@@ -1158,7 +1228,16 @@
         if (text) {
             var span = document.createElement("div");
             span.className = "cw-msg-text";
-            span.textContent = text;
+            if (role === "user") {
+                span.textContent = text;
+            } else {
+                var rendered = cwRenderAssistantMarkdown(text);
+                if (rendered) {
+                    span.innerHTML = rendered;
+                } else {
+                    span.textContent = text;
+                }
+            }
             div.appendChild(span);
         }
         if (!imageB64 && !text) {
@@ -1254,16 +1333,82 @@
 
         return frag;
     }
-    function makeThinkingNode() {
+    function makeThinkingNode(label) {
         var div = document.createElement("div");
         div.className = "cw-msg thinking";
         div.id = "cw-thinking";
-        div.innerHTML =
-            '<span class="cw-dot"></span>' +
-            '<span class="cw-dot"></span>' +
-            '<span class="cw-dot"></span>' +
-            "Thinking...";
+        var d0 = document.createElement("span");
+        d0.className = "cw-dot";
+        var d1 = document.createElement("span");
+        d1.className = "cw-dot";
+        var d2 = document.createElement("span");
+        d2.className = "cw-dot";
+        div.appendChild(d0);
+        div.appendChild(d1);
+        div.appendChild(d2);
+        var span = document.createElement("span");
+        span.className = "cw-thinking-label";
+        span.textContent =
+            (label && String(label).trim()) ? String(label).trim() : "Thinking...";
+        div.appendChild(span);
         return div;
+    }
+
+    /** Mirrors ``chat_engine._chart_visualization_followup`` for optimistic UI. */
+    function looksLikeChartFollowup(text) {
+        var q = String(text == null ? "" : text)
+            .toLowerCase()
+            .trim()
+            .replace(/\s+/g, " ");
+        if (!q) return false;
+        if (/pie chart|piechart|donut chart|bar chart|bar graph|histogram|column chart/.test(q))
+            return true;
+        var chipLike = [
+            "show as a chart",
+            "show as chart",
+            "show a chart",
+            "show the chart",
+            "show chart",
+            "see chart",
+            "see the chart",
+            "see as chart",
+            "see as a chart",
+            "display chart",
+            "display as chart",
+            "view chart",
+            "view as chart",
+            "make a chart",
+            "make chart",
+            "build a chart",
+            "build chart",
+            "create a chart",
+            "create chart",
+            "generate a chart",
+            "generate chart",
+        ];
+        for (var i = 0; i < chipLike.length; i++) {
+            if (q.indexOf(chipLike[i]) !== -1) return true;
+        }
+        if (/\b(as a chart|in a chart|on a chart)\b/.test(q)) return true;
+        if (
+            /\b(chart|graph|plot|visualize|visualise|diagram)\b/.test(q) &&
+            /\b(show|see|display|give|want|could you|can you|put it|put this)\b/.test(q)
+        )
+            return true;
+        if (/\b(show|see)\s+(me\s+)?(this\s+)?(in\s+)?(a\s+)?(pie\s+)?chart\b/.test(q))
+            return true;
+        if (/\bin\s+(a\s+)?chart\b/.test(q) && q.split(/\s+/).length <= 14) return true;
+        if (/^\s*(chart|graph|plot)\s+(this|it|that)\s*$/.test(q)) return true;
+        if (
+            q === "chart" ||
+            q === "graph" ||
+            q === "plot" ||
+            q === "chart please" ||
+            q === "a chart" ||
+            q === "the chart"
+        )
+            return true;
+        return false;
     }
     function showThread() {
         welcome.style.display = "none";
@@ -1369,12 +1514,15 @@
         showThread();
         thread.appendChild(makeMsgNode("user", value, null));
         renderedMsgCount += 1;
+        var optimisticThinking = looksLikeChartFollowup(value)
+            ? "Building chart..."
+            : "Thinking...";
         if (!document.getElementById("cw-thinking")) {
-            thread.appendChild(makeThinkingNode());
+            thread.appendChild(makeThinkingNode(optimisticThinking));
         }
         if (input) {
             input.disabled = true;
-            input.placeholder = "Thinking...";
+            input.placeholder = optimisticThinking;
         }
         if (sendBtn) sendBtn.disabled = true;
         scrollBottom();
@@ -1449,6 +1597,13 @@
     function reconcile(args) {
         var items = (args && Array.isArray(args.messages)) ? args.messages : [];
         var pending = !!(args && args.pending);
+        var a = args || {};
+        var thinkingLabelRaw =
+            a.thinking_label != null ? a.thinking_label : a.thinkingLabel;
+        var thinkingLabel =
+            thinkingLabelRaw != null && String(thinkingLabelRaw).trim() !== ""
+                ? String(thinkingLabelRaw).trim()
+                : "Thinking...";
         var limitReached = !!(args && args.limit_reached);
         var threads = (args && Array.isArray(args.threads)) ? args.threads : [];
         var activeId = (args && args.active_thread_id) || "";
@@ -1484,7 +1639,7 @@
             input.disabled = pending;
             sendBtn.disabled = pending;
             input.placeholder = pending
-                ? "Thinking..."
+                ? thinkingLabel
                 : "Ask about Australian suburb data...";
         }
 
@@ -1518,10 +1673,12 @@
         // Toggle Thinking bubble.
         var thinking = document.getElementById("cw-thinking");
         if (pending && !thinking) {
-            thread.appendChild(makeThinkingNode());
+            thread.appendChild(makeThinkingNode(thinkingLabel));
         } else if (!pending && thinking) {
             thinking.remove();
         } else if (pending && thinking) {
+            var tl = thinking.querySelector(".cw-thinking-label");
+            if (tl) tl.textContent = thinkingLabel;
             // Keep Thinking after newly appended messages.
             thread.appendChild(thinking);
         }

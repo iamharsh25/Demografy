@@ -1,6 +1,6 @@
 """LLM-as-judge scorer for multi-turn conversation scenarios.
 
-Mirrors the style of [eval/judge.py](Demografy/eval/judge.py) but consumes a
+Mirrors the style of ``eval/GoldenDatasetEval/judge.py`` but consumes a
 full conversation transcript (with assistant suggestions) and returns a single
 overall score. Uses Gemini via ``langchain_google_genai`` so the call appears
 in LangSmith alongside the agent runs.
@@ -46,7 +46,7 @@ def score_conversation(scenario_name: str, turns: List[dict]) -> dict:
     Returns:
         {"score": int (1-5), "reasoning": str}. Falls back to score=3 with
         a "parse failed" reasoning if the judge response can't be parsed,
-        matching ``eval/judge.py`` behaviour.
+        matching ``GoldenDatasetEval/judge.py`` behaviour.
     """
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",

@@ -1,19 +1,17 @@
 """Conversation stress eval for the Demografy chatbot.
 
-Runs each scenario in
-[eval/conversation_stress_dataset.json](Demografy/eval/conversation_stress_dataset.json)
+Runs each scenario in ``conversation_stress_dataset.json`` in this directory
 through ``agent.sql_agent.ask`` with an in-memory ``history`` list, then asks
 ``agent.suggestions.generate_suggestions`` for follow-up chips. Each turn is
 checked against quick rules (no SQL/column leak, chip shape) and the whole
-transcript is scored 1-5 by ``eval/conversation_judge.py``.
+transcript is scored 1-5 by ``conversation_judge.py``.
 
 Run from repo root::
 
-    python eval/run_conversation_eval.py
+    python eval/ConversationEval/run_conversation_eval.py
 
 Outputs:
-  * ``eval/conversation_results.json`` - per-scenario report (incremental)
-  * Console summary with pass count, average score, and any failures.
+  * ``eval/ConversationEval/conversation_results.json`` - per-scenario report (incremental)
 
 This eval is internal QA. It does NOT touch ``ChatHistory/`` on disk; the
 ``history`` argument is a plain list. LangSmith picks up traces automatically
@@ -28,18 +26,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parent.parent
+_HERE = Path(__file__).resolve().parent
+_ROOT = _HERE.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from agent.chart_renderer import is_chartable  # noqa: E402
 from agent.sql_agent import GEOGRAPHY_CLARIFICATION_CHIPS, ask  # noqa: E402
 from agent.suggestions import generate_suggestions  # noqa: E402
-from eval.conversation_judge import score_conversation  # noqa: E402
+from conversation_judge import score_conversation  # noqa: E402
 
 
-DATASET_PATH = _ROOT / "eval" / "conversation_stress_dataset.json"
-RESULTS_PATH = _ROOT / "eval" / "conversation_results.json"
+DATASET_PATH = _HERE / "conversation_stress_dataset.json"
+RESULTS_PATH = _HERE / "conversation_results.json"
 
 
 # Forbidden tokens that should never reach the user-facing answer or any chip.
@@ -130,12 +129,10 @@ def _run_scenario(scenario: dict) -> dict:
             rule_failures.append(error)
             answer, sql, meta = "", None, None
 
-        # Rule checks on the answer.
         rule_failures.extend(
             f"turn {i} answer: {f}" for f in _check_text_for_leaks(answer)
         )
 
-        # Suggestions: best-effort. Empty is allowed (no API key, timeout, etc).
         chart_meta = None
         if meta and is_chartable(str(meta.get("intent") or ""), meta.get("rows")):
             chart_meta = meta
@@ -153,12 +150,8 @@ def _run_scenario(scenario: dict) -> dict:
 
         rule_failures.extend(f"turn {i} {f}" for f in _check_chip_shape(chips))
 
-        # Thread meta forward so the next turn can reference previous result rows
-        # (mirrors chat_engine.resolve_pending_question which passes context_meta).
         prev_meta = meta if meta and not meta.get("clarification") else None
 
-        # Update history AFTER the call so the model sees the same context the
-        # live engine builds in chat_engine.resolve_pending_question.
         history.append({"role": "user", "content": q})
         history.append({"role": "assistant", "content": answer})
 
@@ -173,8 +166,6 @@ def _run_scenario(scenario: dict) -> dict:
         if chips:
             print(f"  Turn {i} chips: {chips}", flush=True)
 
-    # must_mention is checked against the FINAL assistant answer, since most
-    # scenarios expect the follow-up to land on the right state/topic.
     if transcript:
         final_answer = transcript[-1]["assistant_answer"]
         final_chips = transcript[-1].get("suggestions") or []
@@ -187,7 +178,6 @@ def _run_scenario(scenario: dict) -> dict:
         )
         rule_failures.extend(_check_must_not_mention(final_answer, must_not_mention))
 
-    # Whole-transcript LLM judge.
     judge_result: dict[str, Any]
     try:
         judge_result = score_conversation(name, transcript)
@@ -225,6 +215,8 @@ def main() -> None:
     print("=" * 80)
     print("DEMOGRAFY CONVERSATION STRESS EVAL")
     print(f"Scenarios: {len(scenarios)}")
+    print(f"Dataset:   {DATASET_PATH}")
+    print(f"Output:    {RESULTS_PATH}")
     print("=" * 80)
     print()
 

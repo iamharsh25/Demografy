@@ -22,6 +22,9 @@ CHARTABLE_INTENTS = frozenset({
     "rental_access",
     "young_family_learning",
     "state_comparison",
+    "state_learning_avg_list",
+    "pair_state_avg",
+    "best_suburb_top_learning_state",
     "single_area_metric",
 })
 
@@ -161,7 +164,16 @@ def build_chart_png_b64(
         if intent == "state_comparison":
             chart_kind = "bar"
 
-        if intent == "state_comparison":
+        if intent in ("state_learning_avg_list", "pair_state_avg"):
+            for row in rows[:10]:
+                labels.append(_shorten_label(str(row[0] or "")))
+                values.append(float(row[1]) if len(row) > 1 and row[1] is not None else 0.0)
+            fig, ax = plt.subplots(figsize=(8, 4), dpi=120)
+            ax.barh(labels[::-1], values[::-1], color=_COLOR_PRIMARY)
+            ax.set_xlabel("Average value" if intent == "pair_state_avg" else "Average learning level %")
+            ax.set_title(title[:CHART_TITLE_MAX], fontsize=11, color="#272d2d")
+            fig.tight_layout()
+        elif intent == "state_comparison":
             for row in rows[:10]:
                 labels.append(_shorten_label(_area_label(row)))
                 values.append(float(row[1]) if row[1] is not None else 0.0)
@@ -247,6 +259,12 @@ def _chart_title(intent: str, question: str, rows: list) -> str:
     n = len(rows)
     if intent == "state_comparison":
         return f"State comparison ({n} rows)"
+    if intent == "state_learning_avg_list":
+        return f"Average learning level by state ({n} rows)"
+    if intent == "pair_state_avg":
+        return f"State comparison ({n} rows)"
+    if intent == "best_suburb_top_learning_state":
+        return f"Top learning suburb in leading state ({n} rows)"
     if intent == "single_area_metric":
         return re.sub(r"\s+", " ", q) or f"Area metric ({n} areas)"
     if "diversity" in q.lower() or "diverse" in q.lower():

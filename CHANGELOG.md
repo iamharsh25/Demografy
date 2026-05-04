@@ -5,6 +5,13 @@ Format: `[vX.Y.Z] — YYYY-MM-DD — Description`
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Eval layout:** suites moved into `eval/GoldenDatasetEval/` (golden questions + `results.json`), `eval/LangsmithEval/` (account check, verify, `langsmith_report.json`), and `eval/ConversationEval/` (stress dataset, judges, conversation result JSON). Index: `eval/README.md`. Golden dataset expanded to 10 items (five client §6.2–style samples + five extended); align first five with the client PDF when available.
+
+---
+
 ## [v0.1.0] — 2026-04-12 — Project Scaffold
 
 ### Added

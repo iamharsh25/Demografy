@@ -2,13 +2,32 @@
 LLM-as-a-Judge for evaluating chatbot responses.
 
 Compares the chatbot's answer against expected criteria and scores it 1-5.
+Runs are logged to LangSmith when tracing env vars are set (same as the app).
 """
 
+from __future__ import annotations
+
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from langsmith import traceable
+
+# Demografy repo root (eval/GoldenDatasetEval -> eval -> Demografy)
+_DEMOGRAFY_ROOT = Path(__file__).resolve().parent.parent.parent
+load_dotenv(_DEMOGRAFY_ROOT / ".env")
+
+_LANGSMITH_PROJECT = os.getenv("LANGCHAIN_PROJECT") or os.getenv("LANGSMITH_PROJECT")
 
 
+@traceable(
+    name="golden_dataset_judge",
+    run_type="llm",
+    tags=["golden_dataset_eval", "judge"],
+    project_name=_LANGSMITH_PROJECT,
+)
 def score_answer(question: str, bot_answer: str, validation_criteria: str) -> dict:
     """
     Uses Gemini as a judge to score the chatbot's answer.
@@ -55,25 +74,25 @@ Respond in this exact format:
 Score: [number]
 Reasoning: [brief explanation]"""
 
-    response = llm.invoke([
-        SystemMessage(content="You are a fair and objective evaluator."),
-        HumanMessage(content=prompt)
-    ])
+    response = llm.invoke(
+        [
+            SystemMessage(content="You are a fair and objective evaluator."),
+            HumanMessage(content=prompt),
+        ]
+    )
 
-    # Parse the response
     text = response.content
     try:
-        score_line = [line for line in text.split('\n') if line.startswith('Score:')][0]
-        score = int(score_line.split(':')[1].strip())
+        score_line = [line for line in text.split("\n") if line.startswith("Score:")][0]
+        score = int(score_line.split(":")[1].strip())
 
-        reasoning_line = [line for line in text.split('\n') if line.startswith('Reasoning:')][0]
-        reasoning = reasoning_line.split(':', 1)[1].strip()
-    except:
-        # Fallback if parsing fails
+        reasoning_line = [line for line in text.split("\n") if line.startswith("Reasoning:")][0]
+        reasoning = reasoning_line.split(":", 1)[1].strip()
+    except Exception:
         score = 3
         reasoning = "Could not parse judge response"
 
     return {
         "score": score,
-        "reasoning": reasoning
+        "reasoning": reasoning,
     }

@@ -12,6 +12,7 @@ Python -> JS (component args, pushed every Streamlit render):
 
     messages          list[{"role", "content", "image_b64"?}]   thread bubbles
     pending           bool                        Thinking spinner on?
+    thinking_label    str                         Text next to dots while ``pending``
     limit_reached     bool                        disable input + show
                                                   cooldown banner when True
     threads           list[{"thread_id", ...}]    newest-first list for
@@ -68,6 +69,7 @@ def render_chat_widget(
     pending: bool,
     limit_reached: bool,
     *,
+    thinking_label: str = "Thinking...",
     threads: Optional[Iterable[dict]] = None,
     active_thread_id: Optional[str] = None,
     suggestions: Optional[Iterable[str]] = None,
@@ -83,6 +85,7 @@ def render_chat_widget(
     return _component_func(
         messages=list(messages or []),
         pending=bool(pending),
+        thinking_label=str(thinking_label or "Thinking..."),
         limit_reached=bool(limit_reached),
         threads=list(threads or []),
         active_thread_id=active_thread_id or "",

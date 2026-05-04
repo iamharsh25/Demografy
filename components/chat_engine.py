@@ -53,6 +53,43 @@ def _chart_visualization_followup(question: str) -> Optional[ChartKind]:
     if not q:
         return None
 
+    # Strip punctuation so "Show as a chart?" matches chip-style phrases.
+    q_plain = " ".join(re.sub(r"[^\w\s]+", " ", q).split())
+
+    # Chip text is "Show as a chart?" — match typed variants without relying on
+    # ``"show "`` substring quirks or punctuation.
+    chip_like = (
+        "show as a chart",
+        "show as chart",
+        "show a chart",
+        "show the chart",
+        "show chart",
+        "see chart",
+        "see the chart",
+        "see as chart",
+        "see as a chart",
+        "display chart",
+        "display as chart",
+        "view chart",
+        "view as chart",
+        "make a chart",
+        "make chart",
+        "build a chart",
+        "build chart",
+        "create a chart",
+        "create chart",
+        "generate a chart",
+        "generate chart",
+    )
+    if any(s in q_plain for s in chip_like) or re.search(
+        r"\b(as a chart|in a chart|on a chart)\b", q_plain
+    ):
+        if "bar" in q or "column" in q or "histogram" in q:
+            return "bar"
+        if "pie" in q or "donut" in q:
+            return "pie"
+        return "pie"
+
     strong_pie = (
         "pie chart",
         "piechart",
@@ -104,7 +141,78 @@ def _chart_visualization_followup(question: str) -> Optional[ChartKind]:
     if re.search(r"\bin\s+(a\s+)?chart\b", q) and len(q.split()) <= 12:
         return "pie"
 
+    # Short imperative: "chart this", "chart it", "visualize this"
+    if re.search(r"^\s*(chart|graph|plot)\s+(this|it|that)\s*$", q):
+        return "pie"
+    if q in ("chart", "graph", "plot", "chart please", "a chart", "the chart"):
+        return "pie"
+
     return None
+
+
+def _infer_chart_intent_from_llm_rows(rows: list) -> str:
+    """Pick a chart renderer intent for ad-hoc SQL rows (``llm_answer`` hydration)."""
+    if not rows:
+        return "ranked_metric"
+    n = len(rows[0])
+    if n == 2:
+        return "state_learning_avg_list"
+    return "ranked_metric"
+
+
+def _prepare_meta_for_chart(meta: dict) -> Optional[dict]:
+    """Return a copy of ``meta`` with ``rows`` filled from ``sql`` when missing.
+
+    Template answers always ship rows, but ``llm_answer`` stores SQL with empty
+    rows; re-query so typed "show chart" matches the chart chip behaviour.
+    """
+    if not isinstance(meta, dict):
+        return None
+    out = dict(meta)
+    intent = str(out.get("intent") or "")
+    rows = out.get("rows")
+    sql = out.get("sql")
+
+    if isinstance(rows, list) and len(rows) >= 1:
+        return out
+
+    if not isinstance(sql, str) or not sql.strip():
+        return None
+
+    from agent.chart_renderer import CHARTABLE_INTENTS
+
+    try:
+        from db.bigquery_client import run_query
+    except Exception:
+        return None
+
+    try:
+        df = run_query(sql)
+    except Exception:
+        return None
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        new_rows = [tuple(row) for row in df.itertuples(index=False, name=None)]
+    except Exception:
+        return None
+    if not new_rows:
+        return None
+    out["rows"] = new_rows
+
+    if intent == "llm_answer":
+        out["intent"] = _infer_chart_intent_from_llm_rows(new_rows)
+    elif intent not in CHARTABLE_INTENTS:
+        return None
+
+    return out
+
+
+def _session_chart_source_meta() -> Optional[dict]:
+    """Meta for building a chart: last chartable list survives clarification turns."""
+    return st.session_state.get("chat_last_chartable_meta") or st.session_state.get(
+        "chat_last_query"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +323,10 @@ def start_new_chat() -> None:
     st.session_state.chat_messages = []
     st.session_state.chat_pending = False
     st.session_state.chat_pending_question = None
+    st.session_state.pop("chat_pending_label", None)
     st.session_state.chat_suggestions = []
     st.session_state.chat_last_query = None
+    st.session_state.chat_last_chartable_meta = None
     st.session_state.chat_context_query = None
 
 
@@ -255,8 +365,10 @@ def open_thread(thread_id: str) -> None:
     ]
     st.session_state.chat_pending = False
     st.session_state.chat_pending_question = None
+    st.session_state.pop("chat_pending_label", None)
     st.session_state.chat_suggestions = []
     st.session_state.chat_last_query = None
+    st.session_state.chat_last_chartable_meta = None
     st.session_state.chat_context_query = None
 
 
@@ -278,20 +390,24 @@ def handle_new_question(question: str) -> None:
     question_count = int(st.session_state.get("question_count", 0))
     cooldown_until = st.session_state.get("chat_cooldown_until")
 
-    # Typed chart request: reuse the last templated result without calling the LLM.
+    # Typed chart request: reuse the last result without calling the LLM when possible.
     chart_kind = _chart_visualization_followup(question)
-    meta = st.session_state.get("chat_last_query")
+    meta = _session_chart_source_meta()
     if chart_kind and meta:
         try:
             from agent.chart_renderer import is_chartable
 
+            ready_meta = _prepare_meta_for_chart(meta)
+            cand = ready_meta or meta
             if is_chartable(
-                str(meta.get("intent") or ""),
-                meta.get("rows"),
+                str(cand.get("intent") or ""),
+                cand.get("rows"),
             ):
                 st.session_state.chat_suggestions = []
                 _append("user", question)
                 _persist("user", question)
+                if ready_meta:
+                    st.session_state.chat_last_query = ready_meta
                 handle_chart_request(chart_kind=chart_kind)
                 return
         except Exception:
@@ -320,6 +436,7 @@ def handle_new_question(question: str) -> None:
 
     st.session_state.chat_pending = True
     st.session_state.chat_pending_question = question
+    st.session_state.pop("chat_pending_label", None)
 
 
 def resolve_pending_question() -> None:
@@ -334,11 +451,12 @@ def resolve_pending_question() -> None:
     question = st.session_state.get("chat_pending_question")
     if not question:
         st.session_state.chat_pending = False
+        st.session_state.pop("chat_pending_label", None)
         return
 
     # Defer the import so we only pay LangChain / google-genai / BigQuery
     # startup cost once a real question is in flight.
-    from agent.sql_agent import USER_FACING_UNANSWERABLE_REPLY, ask
+    from agent.sql_agent import USER_FACING_UNANSWERABLE_REPLY, ask, strip_assistant_reply_for_ui
 
     history: list = []
     user_id = _get_user_id()
@@ -360,6 +478,9 @@ def resolve_pending_question() -> None:
         answer = USER_FACING_UNANSWERABLE_REPLY
 
     final_answer = answer or USER_FACING_UNANSWERABLE_REPLY
+    final_answer = strip_assistant_reply_for_ui(final_answer)
+    if not (final_answer or "").strip():
+        final_answer = USER_FACING_UNANSWERABLE_REPLY
     _append("assistant", final_answer)
     _persist("assistant", final_answer, sql=sql_query)
 
@@ -371,6 +492,7 @@ def resolve_pending_question() -> None:
             template_meta.get("rows"),
         ):
             st.session_state.chat_last_query = template_meta
+            st.session_state.chat_last_chartable_meta = dict(template_meta)
         elif sql_query and not template_meta:
             # Preserve LLM-generated SQL so follow-ups ("more?", state swaps)
             # can reference the prior query via context_meta injection.
@@ -381,6 +503,16 @@ def resolve_pending_question() -> None:
                 "question": question,
                 "state": None,
             }
+            hydrated = _prepare_meta_for_chart(dict(st.session_state.chat_last_query))
+            if hydrated and is_chartable(
+                str(hydrated.get("intent") or ""),
+                hydrated.get("rows"),
+            ):
+                st.session_state.chat_last_chartable_meta = hydrated
+        elif template_meta:
+            st.session_state.chat_last_query = None
+            if not template_meta.get("clarification"):
+                st.session_state.chat_last_chartable_meta = None
         else:
             st.session_state.chat_last_query = None
     except Exception:
@@ -401,7 +533,7 @@ def resolve_pending_question() -> None:
                 question=question,
                 answer=final_answer,
                 history=history,
-                chart_meta=st.session_state.get("chat_last_query"),
+                chart_meta=_session_chart_source_meta(),
             )
         except Exception:
             st.session_state.chat_suggestions = []
@@ -433,13 +565,14 @@ def resolve_pending_question() -> None:
 
     st.session_state.chat_pending = False
     st.session_state.chat_pending_question = None
+    st.session_state.pop("chat_pending_label", None)
 
 
 def handle_chart_request(chart_kind: ChartKind = "pie") -> None:
     """Render the last chartable templated result as an inline image bubble."""
     from agent.chart_renderer import build_chart_png_b64, is_chartable
 
-    meta = st.session_state.get("chat_last_query")
+    meta = _session_chart_source_meta()
     if not meta or not is_chartable(
         str(meta.get("intent") or ""),
         meta.get("rows"),
@@ -473,6 +606,7 @@ def handle_chart_request(chart_kind: ChartKind = "pie") -> None:
         image_b64=png_b64,
     )
     st.session_state.chat_last_query = None
+    st.session_state.chat_last_chartable_meta = None
     st.session_state.chat_suggestions = []
 
 
