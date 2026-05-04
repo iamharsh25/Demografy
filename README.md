@@ -14,12 +14,31 @@ Users ask questions like:
 
 The app:
 
-1. Uses Gemini (via a LangChain SQL agent) to turn the question into SQL where needed  
-2. Runs read-only queries against Demografy's BigQuery views  
-3. Returns a **plain-English** answer (internal column names and SQL are not shown in the chat UI)  
-4. Supports **login**, **per-session question limits**, **multi-thread chat history** on disk, and **optional follow-up suggestion chips** after each reply  
+1. Routes the question through **`app_v4.py`** and **`components/chat_engine.py`** (the chat runs inside an **`@st.fragment`** so long agent work does not trigger a full-page Streamlit rerun overlay).
+2. Uses a **custom chat widget** (persistent **iframe** + `st.components` bridge) for the typing UI; actions like **new chat**, **open thread**, and **send question** are dispatched from the widget into Python.
+3. Uses Gemini (via a LangChain SQL agent) to turn the question into SQL where needed, runs **read-only** queries against Demografy's BigQuery views, and returns a **plain-English** answer (internal column names stay in prompts/SQL—not surfaced as jargon in the main reply).
+4. Keeps **per-thread** context: recent turns are loaded from **`chat_history`** JSONL under `ChatHistory/<user>/`, so follow-ups stay scoped to the active thread.
+5. Supports **sign-in**, **per-session question limits**, **multi-thread chat history**, and **optional follow-up suggestion chips** after each reply (see `components/user_profile.py` and `auth/rbac.py`).
 
-The current UI is **Streamlit v4** with a **custom chat widget** (persistent iframe + fragment-scoped agent runs to avoid page-wide flicker).
+For a longer stakeholder-friendly walkthrough (stack roles, file map, step-by-step request path), see **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)**. That doc is the narrative companion to this README; when they disagree on an implementation detail, **this README and the code win**.
+
+---
+
+## How it works (at a glance)
+
+**Stack roles** (same story as `HOW_IT_WORKS.md`, shortened):
+
+| Piece | Role |
+|--------|------|
+| **Streamlit (`app_v4.py` + `components/`)** | Layout, header, login/profile, body, styles; hosts the chat iframe and fragments. |
+| **`components/chat_engine.py`** | Turns bridge events into `sql_agent.ask(...)`, updates session state, appends JSONL transcripts, applies RBAC limits and cooldowns. |
+| **LangChain + `agent/sql_agent.py`** | SQL agent with schema / checker / query tools backed by BigQuery. |
+| **`agent/prompts.py`** | KPI naming, safety rules, few-shot patterns for `a_master_view`. |
+| **`agent/suggestions.py`** | Follow-up chips after an answer. |
+| **BigQuery** | Live suburb metrics. |
+| **LangSmith** (optional) | Traces for debugging and eval visibility. |
+
+**One request, end-to-end:** user message in the iframe → bridge payload (`question` / `new_chat` / `open_thread`) → `chat_engine` loads **`last_n_turns`** for `chat_thread_id` → **`sql_agent.ask`** runs the LangChain agent → answer (and optional chart path / chips) → UI + disk history. Optional LangSmith traces mirror the same steps.
 
 ---
 
@@ -27,23 +46,23 @@ The current UI is **Streamlit v4** with a **custom chat widget** (persistent ifr
 
 ```
 Demografy/
-├── app.py                 # Entry: run `streamlit run app.py` (delegates to app_v4)
+├── app.py                 # Entry: `streamlit run app.py` (delegates to app_v4)
 ├── app_v4.py              # Page config, header/body, chat @st.fragment
-├── components/            # Header, body, styles, state, chat_engine, chat_widget
-├── agent/                 # sql_agent, prompts, suggestions
+├── components/            # Header, body, styles, state, chat_engine, chat_widget (iframe)
+├── agent/                 # sql_agent, prompts, suggestions, guardrails, templates
 ├── chat_history/          # JSONL storage, context block, thread list
-├── auth/rbac.py           # Tiers and question limits
-├── db/                    # BigQuery helpers
-├── eval/                  # GoldenDatasetEval, LangsmithEval, ConversationEval + guardrail_smoke
-├── ChatHistory/           # Runtime transcripts (gitignored); see chat_history/
+├── auth/                  # rbac, cooldown
+├── db/                    # BigQuery helpers (+ optional catalog scripts)
+├── eval/                  # GoldenDatasetEval, LangsmithEval, ConversationEval; see below
+├── ChatHistory/           # Runtime transcripts (gitignored)
 ├── .streamlit/config.toml # Theme + port (8502)
 ├── README.md              # This file
-├── PROJECT_FILES.md       # What each file/folder does (detailed)
-├── HOW_IT_WORKS.md        # Plain-English architecture for the team
+├── PROJECT_FILES.md       # Per-file map
+├── HOW_IT_WORKS.md        # Plain-English architecture for stakeholders
 └── CHANGELOG.md
 ```
 
-For a **line-by-line map** of source files, see **[PROJECT_FILES.md](PROJECT_FILES.md)**.
+For a **line-by-line map** of source files, see **[PROJECT_FILES.md](PROJECT_FILES.md)**. For **eval-only** commands and outputs, see **[eval/README.md](eval/README.md)**.
 
 ---
 
@@ -105,46 +124,44 @@ You should see real suburb names and metrics explained in natural language. If y
 
 ## Evaluation
 
-Three evaluation areas live under [`eval/`](eval); see [`eval/README.md`](eval/README.md) for the index.
+Quality checks live under **`eval/`** and are split into **three suite folders** plus a **fast smoke** script. **Run every command from the Demografy repo root** (same `.env` as the app).
 
-### 1. Golden-dataset eval (project deliverable)
+| Suite | What it measures | Command | Default output |
+|--------|------------------|---------|----------------|
+| **GoldenDatasetEval** | Single-turn accuracy: golden questions, **SQL pattern** checks, **LLM judge** per row | `python eval/GoldenDatasetEval/run_eval.py` | `eval/GoldenDatasetEval/results.json` |
+| **ConversationEval** | Multi-turn behaviour: follow-ups, **suggestion chips**, rule checks (no SQL / `kpi_*` leak, chip shape), **transcript judge** | `python eval/ConversationEval/run_conversation_eval.py` | `eval/ConversationEval/conversation_results.json` |
+| **LangsmithEval** | Which **workspace** your API key uses and whether **recent runs** exist for `LANGCHAIN_PROJECT` | `python eval/LangsmithEval/run_langsmith_checks.py` | `eval/LangsmithEval/langsmith_report.json` |
+| **Guardrail smoke** | Fast **routing / guardrail** checks **without BigQuery** | `python eval/guardrail_smoke.py` | (console) |
 
-Single-turn accuracy with SQL-pattern matching and an LLM judge per question.
+More detail per folder: **[eval/README.md](eval/README.md)**, **[eval/GoldenDatasetEval/README.md](eval/GoldenDatasetEval/README.md)**, **[eval/ConversationEval/README.md](eval/ConversationEval/README.md)**, **[eval/LangsmithEval/README.md](eval/LangsmithEval/README.md)**.
 
-```bash
-python eval/GoldenDatasetEval/run_eval.py
-```
+### Golden dataset eval (deliverable-style QA)
 
-Reads [`eval/GoldenDatasetEval/golden_dataset.json`](eval/GoldenDatasetEval/golden_dataset.json), writes
-[`eval/GoldenDatasetEval/results.json`](eval/GoldenDatasetEval/results.json), and prints a pass/fail summary.
+- **Input:** [`eval/GoldenDatasetEval/golden_dataset.json`](eval/GoldenDatasetEval/golden_dataset.json) — `core_set` (ids 1–5) and `comparison_followup` (ids 6–10) covering diversity, prosperity, learning, social housing, rental access, and cross-state comparisons.
+- **How it runs:** For each row, the runner exercises the real agent path (LangChain + BigQuery when configured), records the model answer and SQL, checks **expected SQL patterns**, then calls **`judge.py`** (LLM) for a quality score and reasoning.
+- **Output:** [`eval/GoldenDatasetEval/results.json`](eval/GoldenDatasetEval/results.json) — per question: e.g. `question`, `answer`, `sql`, `sql_pattern_match`, `judge_score`, `reasoning`, LangSmith connectivity flags, `id`, `source`, or `error` on failure.
+- **LangSmith:** With tracing env vars set, golden rows are wrapped in traceable spans tagged e.g. `golden_dataset_eval` and `judge` so you can filter runs in the LangSmith UI (see golden eval README).
 
-### 2. Conversation stress eval (internal QA)
+### Conversation stress eval (internal multi-turn QA)
 
-Multi-turn scenarios that exercise follow-up understanding, suggested
-follow-up chips, and conversational memory. Each scenario runs through the
-real `agent.sql_agent.ask` plus `agent.suggestions.generate_suggestions`, with
-in-memory `history` (does not write to `ChatHistory/`). Every turn is checked
-against rules (no SQL / `kpi_*` leak, chips end with `?`, max 3 chips), and the
-whole transcript is scored 1-5 by a Gemini judge.
+- **Input:** [`eval/ConversationEval/conversation_stress_dataset.json`](eval/ConversationEval/conversation_stress_dataset.json) — scripted multi-turn scenarios.
+- **How it runs:** Uses the real **`agent.sql_agent.ask`** and **`agent.suggestions.generate_suggestions`** with in-memory `history` (does **not** write to `ChatHistory/`). Each turn is validated against **rules** (no internal SQL/KPI leakage to the user-facing text, chips end with `?`, max chips, etc.), then **`conversation_judge.py`** scores the full transcript (e.g. 1–5).
+- **Output:** [`eval/ConversationEval/conversation_results.json`](eval/ConversationEval/conversation_results.json).
+- **Education / single-scenario runs:**  
+  `python eval/ConversationEval/run_education_conversation_eval.py`  
+  Optional: `--id <scenario> --output path/to.json` (see ConversationEval README).
 
-```bash
-python eval/ConversationEval/run_conversation_eval.py
-```
+### LangSmith verification
 
-Reads [`eval/ConversationEval/conversation_stress_dataset.json`](eval/ConversationEval/conversation_stress_dataset.json)
-and writes [`eval/ConversationEval/conversation_results.json`](eval/ConversationEval/conversation_results.json).
-This is **internal QA**, not part of the golden-dataset deliverable.
-
-### LangSmith tracing for evals
-
-Both evals run through LangChain, so traces appear in the LangSmith project
-named by `LANGCHAIN_PROJECT` (default `demografy-chatbot`). To confirm:
+Useful when traces “disappear” in the browser (wrong workspace) or before demos:
 
 ```bash
-python eval/LangsmithEval/verify_langsmith.py --smoke   # add a fresh trace + list runs
-python eval/LangsmithEval/langsmith_account_check.py    # which workspace owns your key
-python eval/LangsmithEval/run_langsmith_checks.py       # writes eval/LangsmithEval/langsmith_report.json
+python eval/LangsmithEval/verify_langsmith.py --smoke   # optional smoke trace + list runs
+python eval/LangsmithEval/langsmith_account_check.py    # workspace + project the key sees
+python eval/LangsmithEval/run_langsmith_checks.py       # writes langsmith_report.json
 ```
+
+Both **golden** and **conversation** evals go through LangChain where applicable, so runs can appear under the project named by **`LANGCHAIN_PROJECT`** (default `demografy-chatbot` in `.env.template`).
 
 ---
 
@@ -189,7 +206,7 @@ Open that link while logged into LangSmith (same account that created the API ke
 Other checks:
 
 1. **`.env` in the repo root** must include `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, and `LANGCHAIN_PROJECT=demografy-chatbot` (see `.env.template`). Restart the app after editing.
-2. In the UI, use the **workspace switcher** (often bottom-left or next to your org name) until it matches the **display name** from `langsmith_account_check.py` (`eval/LangsmithEval/`).
+2. In the UI, use the **workspace switcher** until it matches the **display name** from `langsmith_account_check.py`.
 3. **Open the project, not only Home:** **Tracing** → **`demografy-chatbot`** → **Runs**.
 
 The app loads `.env` from the **Demografy directory** automatically (even if you start Streamlit from a parent folder) so LangChain sees tracing variables before it initialises.
@@ -245,13 +262,13 @@ The chat surfaces metrics in **plain English**. Internally, KPI columns map roug
 ## Architecture (high level)
 
 ```
-Browser (Streamlit + custom chat iframe)
-    ↓ component value (question / new_chat / open_thread)
-components/chat_engine.py
-    ↓ last_n_turns from chat_history/storage.py
+Browser (Streamlit layout + custom chat iframe)
+    ↓ st.components bridge (question / new_chat / open_thread)
+components/chat_engine.py  [@st.fragment — scoped loading UI]
+    ↓ last_n_turns from chat_history/storage.py (per chat_thread_id)
 agent/sql_agent.py  →  Gemini + BigQuery (read-only)
     ↓
-Answer + optional agent/suggestions.py chips
+Plain-English answer + optional charts path + agent/suggestions.py chips
     ↓
 Session state + JSONL under ChatHistory/<user>/
 ```
@@ -271,5 +288,6 @@ Observability: LangSmith when configured.
 ## More documentation
 
 - **[PROJECT_FILES.md](PROJECT_FILES.md)** — what each file does  
-- **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)** — narrative explanation for stakeholders  
+- **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)** — plain-English architecture for stakeholders (stack, journey, file map)  
+- **[eval/README.md](eval/README.md)** — evaluation suite index  
 - **[CHANGELOG.md](CHANGELOG.md)** — version history  

@@ -7,7 +7,7 @@
 
 We built an AI chatbot that lets anyone type a question in plain English — like *"Which suburbs in Victoria have the highest diversity?"* — and get a real, data-driven answer pulled directly from Demografy's database of 2,329 Australian suburbs.
 
-The chatbot does not guess. It reads the question, writes a database query, runs it against real data, and gives back a factual answer. Every step is logged so the team can see exactly what happened.
+The chatbot does not guess when answering from data: it reads the question, may write a database query (via the LangChain SQL agent), runs it against BigQuery when needed, and returns a factual answer in **plain English**. **LangSmith** (optional) logs the technical steps for the team. The **main chat UI** does not show raw SQL or internal column names to end users; those details stay in traces and in code paths used for follow-ups and charts.
 
 ---
 
@@ -18,84 +18,102 @@ Think of it like a restaurant kitchen:
 | Tool | What it is in plain English | Role in our project |
 |---|---|---|
 | **Python** | The programming language everything is written in | The base language |
-| **Streamlit** | A Python library that turns Python code into a website | The chat window users see |
-| **Gemini AI** | Google's AI (like ChatGPT) | Reads the question, writes the SQL, formats the answer |
-| **LangChain** | A Python library that connects AI to a database | The "glue" — tells Gemini what tools it has and runs everything |
+| **Streamlit** | A Python library that turns Python code into a website | Page shell: header, body, login, **fragments** |
+| **Gemini AI** | Google's AI (like ChatGPT) | Reads the question, writes SQL when the SQL agent runs, formats answers |
+| **LangChain** | A Python library that connects AI to a database | Wires Gemini to BigQuery tools (schema, checker, query) |
 | **Google BigQuery** | Google's cloud database where Demografy's suburb data lives | Where the actual data is stored and queried |
-| **LangSmith** | A dashboard that records every AI step | The "security camera" — logs what happened for debugging |
+| **LangSmith** | A dashboard that records AI / chain steps | Debugging, eval visibility, screenshots for deliverables |
 | **Virtual Environment (venv)** | An isolated Python workspace | Keeps this project's packages separate from the rest of your laptop |
 | **.env file** | A text file that stores secret keys | Keeps passwords and API keys out of the code |
 
 **The kitchen analogy:**
+
 - **BigQuery** = the fridge (all the ingredients / data)
-- **Gemini** = the chef (makes decisions, writes the recipe / SQL)
+- **Gemini** = the chef (makes decisions, writes the recipe / SQL when we use the SQL agent path)
 - **LangChain** = the kitchen manager (organises the chef, the fridge, and the tools)
-- **Streamlit** = the restaurant front-of-house (what the customer sees)
-- **LangSmith** = the CCTV camera (records everything for review)
+- **Streamlit + our custom chat iframe** = the restaurant front-of-house (what the customer sees and types into)
+- **LangSmith** = the CCTV camera (records technical steps for the team)
 
 ---
 
-## Project File Map — Every File in One Sentence
+## Project File Map — The Important Pieces
 
 ```
 Demografy/
 │
-├── app.py                ← The entire website UI (what you see in the browser)
+├── app.py                 ← Thin entry: `streamlit run app.py` loads app_v4
+├── app_v4.py             ← Page config, header/body layout, chat area (runs agent inside @st.fragment)
+│
+├── components/
+│   ├── chat_engine.py     ← Heart of the UX loop: bridge events → ask() → history JSONL, limits, charts path
+│   ├── chat_widget/       ← Custom HTML/JS chat UI (iframe) + Python bridge (question / new_chat / open_thread)
+│   ├── user_profile.py    ← Login dialog, profile pill, tier-aware UI hooks
+│   ├── header.py / body.py / styles.py / state.py  ← Layout, theme, session restore
+│   └── ...
 │
 ├── agent/
-│   ├── sql_agent.py      ← The brain — connects Gemini AI to BigQuery via LangChain
-│   └── prompts.py        ← The instruction manual — teaches Gemini which columns mean what
+│   ├── sql_agent.py      ← Routing + LangChain SQL agent: templates vs LLM, guardrails, strip_for_ui
+│   ├── prompts.py        ← Instruction manual for SQL: KPIs, rules, few-shots
+│   ├── suggestions.py    ← Follow-up suggestion chips after a reply
+│   ├── guardrails.py     ← Topic / phrasing checks used in routing
+│   └── templates.py      ← Deterministic answers for common question shapes (fast + reliable)
+│
+├── chat_history/          ← JSONL storage, thread list, context snippets for the agent
 │
 ├── db/
-│   ├── bigquery_client.py ← The key to the database — handles the BigQuery connection
-│   └── explore.py        ← A one-time script to explore and understand the data
+│   ├── bigquery_client.py ← Service-account BigQuery runs (also used for chart hydration)
+│   └── explore.py         ← Optional exploration helpers
 │
 ├── auth/
-│   └── rbac.py           ← The bouncer — checks user tier and enforces question limits
+│   ├── rbac.py            ← Tiers, question limits, BigQuery user lookup (dev_customers)
+│   └── cooldown.py        ← Short cooldown between asks to protect the backend
 │
 ├── eval/
-│   ├── GoldenDatasetEval/  ← golden_dataset.json, run_eval.py, judge.py, results.json
-│   ├── LangsmithEval/      ← verify LangSmith workspace + langsmith_report.json
-│   ├── ConversationEval/   ← multi-turn scenarios, conversation_results.json
-│   └── guardrail_smoke.py  ← fast routing checks without BigQuery
+│   ├── GoldenDatasetEval/   ← Single-turn golden questions, SQL pattern + LLM judge → results.json
+│   ├── LangsmithEval/       ← Workspace verification + langsmith_report.json
+│   ├── ConversationEval/    ← Multi-turn stress + chips + transcript judge
+│   ├── guardrail_smoke.py   ← Fast routing checks without BigQuery
+│   └── README.md            ← Index of eval commands
 │
-├── .streamlit/
-│   └── config.toml       ← Demografy brand colours and font settings
-│
-├── .env                  ← Secret keys (not on GitHub — gitignored)
-├── .env.template         ← A blank version of .env safe to share
-├── requirements.txt      ← The shopping list of Python packages to install
-├── README.md             ← Setup instructions for anyone cloning the repo
-└── CHANGELOG.md          ← Version history of what changed and when
+├── .streamlit/config.toml ← Theme, default port (8502)
+├── .env / .env.template   ← Secrets (gitignored) vs template safe to commit
+├── requirements.txt
+├── README.md                ← Setup + eval overview (kept in sync with code)
+├── HOW_IT_WORKS.md          ← This document
+├── PROJECT_FILES.md         ← Deeper per-file map
+└── CHANGELOG.md
 ```
 
 ---
 
 ## The Full Journey — What Happens When You Ask a Question
 
-Let's trace exactly what happens when a user types:
+Let's trace what happens when a user types (in the chat widget):
+
 > *"What are the top 5 most diverse suburbs in Victoria?"*
 
 ```
-Step 1 — User types the question
+Step 1 — User types in the custom chat iframe
          ↓
-         app.py receives the text
+         The widget sends a "question" payload through the Streamlit components bridge
 
-Step 2 — app.py calls ask() in sql_agent.py
+Step 2 — components/chat_engine.py handles the event (inside @st.fragment)
          ↓
-         "Please figure out the answer to this question"
+         Loads recent turns for this chat_thread_id from chat_history (JSONL on disk)
+         so follow-ups stay in context
 
-Step 3 — sql_agent.py checks if the agent is ready
+Step 3 — chat_engine calls agent/sql_agent.py: ask(question, history, context_meta, ...)
          ↓
-         If first question ever: connects to BigQuery + sets up Gemini (takes ~5 seconds)
-         If already used before: skips setup, goes straight to step 4
+         ask() is not "always SQL first": it applies guardrails, may answer from
+         templates, or may invoke the LangChain SQL agent depending on the question
+         and conversation context (see sql_agent docstring)
 
-Step 4 — LangChain sends the question to Gemini AI
+Step 4 — When the SQL agent path runs, LangChain sends the (possibly contextualised)
+         input to Gemini
          ↓
-         Along with: our instruction manual (prompts.py) + the database schema
-         Gemini reads all of this and thinks: "I need to write a SQL query"
+         Together with prompts.py (rules, KPI map, few-shots) and schema tools
 
-Step 5 — Gemini writes a SQL query
+Step 5 — Gemini plans SQL (example shape)
          ↓
          SELECT sa2_name, state, kpi_2_val AS diversity_index
          FROM `demografy.prod_tables.a_master_view`
@@ -104,36 +122,26 @@ Step 5 — Gemini writes a SQL query
          ORDER BY kpi_2_val DESC
          LIMIT 5;
 
-Step 6 — LangChain checks the SQL (uses a built-in SQL checker tool)
+Step 6 — LangChain checks the SQL (query checker tool), then runs it against BigQuery
          ↓
-         Confirms the query is valid before running it
+         Rows come back as real data
 
-Step 7 — LangChain runs the SQL against BigQuery
+Step 7 — Gemini turns rows into a plain-English reply; strip_assistant_reply_for_ui
+         removes internal phrasing we do not want in the bubble
+
+Step 8 — chat_engine persists the turn (user + assistant) to JSONL under ChatHistory/<user>/
          ↓
-         BigQuery searches through 2,329 suburbs and returns 5 rows of real data:
-         [('Keilor Downs', 'Victoria', 0.88), ('Delahey', 'Victoria', 0.87), ...]
+         The iframe shows the final message; while waiting, users see a "Thinking..." style
+         indicator (not a live dump of every tool name unless we add that later)
 
-Step 8 — LangChain sends the raw data back to Gemini
-         ↓
-         "Here are the results. Now write a nice plain-English answer."
+Step 9 — Optional: agent/suggestions.py proposes short follow-up chips (e.g. chart or drill-down)
 
-Step 9 — Gemini writes the final answer
-         ↓
-         "The top 5 most diverse suburbs in Victoria are:
-          1. Keilor Downs (diversity index: 0.88)
-          2. Delahey (0.87)
-          ..."
-
-Step 10 — app.py displays the answer in the chat
+Step 10 — If LangSmith env vars are set, the chain is traced under LANGCHAIN_PROJECT
           ↓
-          Also shows a "🔍 View SQL Query" expander so users can inspect what ran
-
-Step 11 — LangSmith records every single step above
-          ↓
-          The Demografy team can log into smith.langchain.com and see the full trace
+          Developers open smith.langchain.com in the correct workspace to inspect SQL, tools, latency
 ```
 
-**Every step above is visible live in the chat window** — you see the AI "thinking" in real-time before the final answer appears.
+**What users see vs what the team sees:** Users see natural language, loading state, and chips. **SQL and tool internals** are primarily for **LangSmith** and **engineering**, not copied into the main bubble as raw diagnostics.
 
 ---
 
@@ -141,193 +149,148 @@ Step 11 — LangSmith records every single step above
 
 ---
 
-### `app.py` — The Website
+### `app.py` and `app_v4.py` — The Website Shell
 
-This is the only file that creates the visual interface. When you run `streamlit run app.py`, Python reads this file and serves a website at `http://localhost:8501`.
+**`app.py`** is a tiny entry file: it runs `app_v4.py` so the command stays `streamlit run app.py`.
 
-**What it does:**
-- Sets up the page (title, icon, layout)
-- Injects CSS (the brand colours, font, gradient background)
-- Creates the two-column layout: left info panel + right chat
-- Handles the ▶/◀ collapse toggle on the left panel
-- Manages chat history (stored in `st.session_state` — Streamlit's memory)
-- When a user submits a question, calls `ask()` from `sql_agent.py`
-- Displays the answer and a collapsible SQL query viewer
-- If BigQuery fails for any reason, falls back to asking Gemini directly (no SQL, just general knowledge) and shows a warning
+**`app_v4.py`** is the real Streamlit page:
 
-**Key Streamlit concepts used:**
-- `st.columns()` — creates side-by-side sections
-- `st.chat_message()` — renders user/assistant chat bubbles
-- `st.chat_input()` — the text box at the bottom
-- `st.session_state` — remembers things between interactions (like a notepad)
-- `st.expander()` — the collapsible "View SQL Query" section
-- `st.spinner()` — the "Thinking..." loading indicator
+- Page config (title, layout, favicon)
+- Imports layout pieces from `components/` (header, body, styles)
+- Hosts the **chat widget** and runs **`components/chat_engine.maybe_consume_bridge`** inside an **`@st.fragment`** so a long `ask()` does not flash the whole page with a global "Running…" overlay
+
+**Port:** With the bundled `.streamlit/config.toml`, the app is usually at **http://localhost:8502** (not 8501).
 
 ---
 
-### `agent/sql_agent.py` — The Brain
+### `components/chat_engine.py` — The Chat Loop
 
-This is the most important file. It is the bridge between the AI and the database.
+This module connects the **iframe bridge** to **`sql_agent.ask`** and **disk history**.
 
-**The key concept — a LangChain "agent":**
-An agent is an AI that has been given *tools* it can use. Our agent has three tools:
-1. **sql_db_schema** — look at the database table structure
-2. **sql_db_query_checker** — check if a SQL query is valid before running it
-3. **sql_db_query** — actually run a SQL query and get results
+**Bridge actions** (see module docstring):
 
-The agent decides which tools to use, in which order, on its own.
+- **`question`** — run the agent for the active thread, append messages, enforce RBAC limits and cooldowns, optionally trigger chart rendering when the user asks for a chart in natural language
+- **`new_chat`** — new `chat_thread_id`, clears live messages, keeps old JSONL files
+- **`open_thread`** — load an existing transcript into the widget
 
-**The two main functions:**
+Agent context uses **`last_n_turns`** for the **current thread only**, so conversations do not bleed across threads.
 
-`_create_agent()` — runs once, on the first question ever asked:
-1. Connects LangChain to BigQuery (`SQLDatabase.from_uri`)
-2. Creates a Gemini AI instance (`ChatGoogleGenerativeAI`)
-3. Combines them into an agent with our instruction manual (`create_sql_agent`)
-4. Returns the ready-to-use agent
+---
 
-`ask(question, callbacks)` — runs every time a user asks something:
-1. Creates the agent if it doesn't exist yet
-2. Passes the question to the agent
-3. The agent does all the work (steps 4–9 in the journey above)
-4. Extracts the SQL that was used from the agent's logs (`intermediate_steps`)
-5. Returns a tuple: `(answer text, SQL query)`
+### `components/chat_widget/` — The Typing UI
 
-**Why `temperature=0`?**
-Temperature controls how "creative" the AI is. At 0, Gemini is fully deterministic — it gives the same SQL for the same question every time. Higher temperature would mean unpredictable queries, which is bad for a database bot.
+A **declared Streamlit custom component** (persistent iframe with HTML/JS) — see the **Communication contract** in `chat_widget/__init__.py`. Python pushes props (`messages`, `pending`, `suggestions`, …); JavaScript sends **`setComponentValue`** payloads (`question`, `new_chat`, `open_thread`, `chart`, …) back to **`maybe_consume_bridge`** in `chat_engine.py`. This avoids full iframe reloads on every rerun and cuts visible flicker compared to embedding a one-off HTML snippet.
 
-**Why `max_iterations=10`?**
-This stops the agent from going in circles. If it hasn't figured out the answer in 10 steps, it stops and reports what it has. Prevents infinite loops.
+---
+
+### `components/user_profile.py` — Login and Profile
+
+**Wired today:** **Login** opens from the header (`@st.dialog` sign-in), looks up the user via **`auth/rbac.get_user`**, and ties chat history paths to that user id. Tier limits from **`rbac.py`** apply once signed in.
+
+---
+
+### `agent/sql_agent.py` — The Brain (Routing + SQL Agent)
+
+This is the most important backend file. It:
+
+1. **Normalises** the question and applies **guardrails** (unsupported topics, schema probes, vague phrasing, etc.).
+2. Chooses between **deterministic template answers** (`templates.py`) and the **LangChain SQL agent** (`_invoke_llm_sql_agent`), depending on context — templates are fast and reliable for common shapes; the LLM path handles richer follow-ups.
+3. Returns **`(answer, sql, meta)`** — SQL may be `None` for template-only answers; `meta` can carry rows for charts or clarification chips.
+
+**LangChain agent tools** (when the SQL path runs): schema, SQL checker, SQL query — same mental model as before.
+
+**`temperature=0`** — keeps SQL behaviour stable.
+
+**`max_iterations=10`** — prevents runaway tool loops.
 
 ---
 
 ### `agent/prompts.py` — The Instruction Manual
 
-This is arguably the most important file for *accuracy*. Before Gemini writes any SQL, it reads this file entirely. Think of it as a briefing document given to a new employee.
+Same role as before: role, rules (read-only, `a_master_view`, LIMIT, no `SELECT *`, NULL handling), KPI translation, few-shot SQL aligned with Demografy's business patterns. Quality here directly affects SQL accuracy.
 
-**What it contains:**
+---
 
-**1. The role definition:**
-> "You are a demographic data analyst for Demografy. You help users query Australian suburb-level demographic data stored in Google BigQuery."
+### `agent/suggestions.py` and `agent/templates.py`
 
-This tells Gemini *who it is* and *what it's supposed to do*.
-
-**2. The rules:**
-- Only query `demografy.prod_tables.a_master_view` (can't touch other tables)
-- Never run DELETE, UPDATE, INSERT, or DROP (read-only)
-- Always use LIMIT (max 50 rows — prevents expensive full-table scans)
-- Never use SELECT * (always name specific columns)
-- Always filter out NULLs with IS NOT NULL
-
-**3. The KPI translation table:**
-This is critical. Gemini doesn't know that "diversity" means `kpi_2_val`. We tell it:
-
-| What users say | Column in database |
-|---|---|
-| "prosperity score" | kpi_1_val |
-| "diversity index" | kpi_2_val |
-| "migration footprint" | kpi_3_val |
-| "learning level" | kpi_4_val |
-| ...and so on | ... |
-
-**4. Ten example queries:**
-We give Gemini 10 real examples of questions and their correct SQL. This is called *few-shot prompting* — teaching by example. The examples come from Demografy's own Sample SQL Queries document, so the patterns are exactly what the business expects.
-
-By seeing examples, Gemini learns:
-- Always use backtick-quoted table names
-- Always use IS NOT NULL
-- Always use ROUND() for decimal values
-- Use meaningful column aliases like `AS diversity_index` not just the raw column name
-
-The better this file is, the more accurate the chatbot's SQL becomes.
+- **`suggestions.py`** — builds a small set of **follow-up chips** after an answer (e.g. chart or related query), with rules enforced in evals.
+- **`templates.py`** — pattern-matched answers that **skip the LLM** when we already know the SQL shape; improves latency and consistency.
 
 ---
 
 ### `db/bigquery_client.py` — The Key to the Database
 
-This file handles the low-level mechanics of connecting to BigQuery.
-
-**What it does:**
-- Reads the service account JSON file path from the `.env` file
-- Creates an authenticated BigQuery client (like logging into the database)
-- Provides a `run_query(sql)` function that takes SQL text and returns a table of results as a pandas DataFrame (a Python table structure)
-
-**What a service account is:**
-A service account is like a "robot user" in Google Cloud. Instead of a person logging in with a username and password, our code logs in using a JSON file that contains a private cryptographic key. Google checks the key and grants access.
-
-This file is used directly by `auth/rbac.py` (to look up users) and indirectly by `sql_agent.py` (LangChain uses its own connection, but the same credentials).
+Reads **`GOOGLE_APPLICATION_CREDENTIALS`**, runs SQL to DataFrames. Used by RBAC user lookup, chart hydration paths, and indirectly by LangChain's BigQuery connection (same credentials story).
 
 ---
 
-### `auth/rbac.py` — The Bouncer
+### `auth/rbac.py` and `auth/cooldown.py`
 
-RBAC stands for Role-Based Access Control. This file manages *who can ask how many questions*.
+**`rbac.py`** — tiers (Free / Basic / Pro), per-session question caps, **`get_user`** against BigQuery `dev_customers`, helpers for limit warnings.
 
-**The tier system:**
+**`cooldown.py`** — short spacing between asks to reduce accidental double-submits and load spikes.
 
-| Tier | Questions per session |
-|---|---|
-| Free | 5 |
-| Basic | 20 |
-| Pro | 50 |
+---
 
-**The four functions:**
+## How We Evaluate Quality (High Level)
 
-`get_user(user_id)` — looks up a user ID in the `dev_customers` BigQuery table. Returns their email, tier, and whether they're active. Returns `None` if not found.
+Automated checks live under **`eval/`** (see **`eval/README.md`** and **`README.md`**):
 
-`get_question_limit(tier)` — given a tier name, returns the number (5, 20, or 50).
+| Area | Plain English |
+|------|----------------|
+| **GoldenDatasetEval** | Fixed single-turn questions; checks SQL patterns and uses an LLM judge; writes `results.json`. |
+| **ConversationEval** | Scripted multi-turn chats through the real `ask` + chips; rule checks + transcript judge; writes `conversation_results.json`. |
+| **LangsmithEval** | Confirms your API key's workspace and that runs show up where you expect (avoids "wrong workspace" confusion). |
+| **guardrail_smoke.py** | Quick routing smoke tests without hitting BigQuery. |
 
-`is_limit_reached(tier, count)` — returns True if the user has used up all their questions for this session.
-
-`should_show_warning(tier, count)` — returns True when a user is close to their limit (so the UI can show a warning message).
-
-Note: this module is written and ready, but the login screen hasn't been wired into the current UI yet. The chatbot currently works without login — this will be connected in a future version.
+These complement **LangSmith** traces for debugging individual failures.
 
 ---
 
 ## Key Design Decisions
 
-**Why no login screen currently?**
-We built the RBAC logic first so it's ready, but skipped the login UI for now to keep development fast. The chatbot works without it, and the login can be added later without changing any backend code.
+**Why a custom chat iframe instead of only built-in Streamlit chat widgets?**  
+Product UX: persistent thread feel, controlled styling, and a clear bridge for **new chat / open thread** without rewriting the whole page on every keystroke.
 
-**Why does the left panel collapse?**
-It gives more space to the chat. On smaller screens or during demos, collapsing the panel makes the chat full-width.
+**Why `@st.fragment` around the agent?**  
+So **slow LLM + BigQuery** work shows a **fragment-scoped** loading state instead of blocking the entire Streamlit app shell.
 
-**Why does the app fall back to Gemini if BigQuery fails?**
-So the chatbot is never completely broken. If the database connection drops, users still get an AI-powered answer with a clear disclaimer saying it's not from live data.
+**Why templates *and* an LLM SQL agent?**  
+Templates give **predictable, fast** answers for common questions; the **LLM agent** handles **contextual follow-ups** ("same for NSW?", "show more") that would be brittle if hard-coded only.
 
-**Why are the few-shot examples from the company's SQL document?**
-We could have written generic examples, but using Demografy's own SQL patterns means the AI learns the exact business logic the company already uses — correct thresholds, correct KPI combinations, correct column names.
+**Why does the left panel collapse?**  
+More horizontal room for the chat on small screens and during demos.
 
-**Why `temperature=0`?**
-A chatbot that writes database queries needs to be consistent and predictable. Creative AI is fun for writing stories, but terrible for SQL generation.
+**What if the model cannot answer from data?**  
+Users get a controlled **unanswerable / clarify** style reply (`USER_FACING_UNANSWERABLE_REPLY` or geography chips) rather than silent failure; we do **not** advertise a separate "ask Gemini general knowledge instead of census data" path for failed BigQuery — product answers stay on the data assistant contract.
+
+**Why few-shots from the company's SQL document?**  
+So the model learns **Demografy's real naming and thresholds**, not generic textbook SQL.
+
+**Why `temperature=0` for SQL generation?**  
+Consistency beats creativity for database queries.
 
 ---
 
 ## What Happens in LangSmith
 
-LangSmith is Demografy's observability platform. Every time someone asks a question, LangSmith records:
+When tracing is enabled, LangSmith can record:
 
-1. The user's question
-2. Which tools the agent called (and in what order)
-3. The exact SQL that was generated
-4. The raw BigQuery results
-5. The final formatted answer
-6. How long each step took
-7. Token usage (how much AI was consumed)
+1. The user's question (and wrapped context for eval spans)
+2. Tool calls and order (schema / checker / query)
+3. Generated SQL
+4. Final assistant text (and judge spans for golden eval)
 
-To see it: log into [smith.langchain.com](https://smith.langchain.com) → open the `demografy-chatbot` project → click any trace to see every step expanded.
+Open **[smith.langchain.com](https://smith.langchain.com)** → correct **workspace** (use `eval/LangsmithEval/langsmith_account_check.py` if traces seem missing) → project **`demografy-chatbot`** (or your `LANGCHAIN_PROJECT`) → **Runs**.
 
-This is useful for:
-- **Debugging**: if someone gets a wrong answer, you can see exactly which SQL ran and why
-- **Evaluation**: checking if the AI is writing good SQL over time
-- **Cost tracking**: seeing how many tokens are being used per question
+Useful for **debugging**, **golden/conversation evals**, and **cost** visibility.
 
 ---
 
 ## Summary — The One-Paragraph Version
 
-The Demografy Insights Chatbot is a Python web app built with Streamlit. When a user types a question, the app passes it to a LangChain SQL agent. The agent uses Gemini AI as its brain and has been given an instruction manual (`prompts.py`) that teaches it Demografy's database structure and KPI names. The agent writes a SQL query, checks it, runs it against BigQuery, and then asks Gemini to format the results into a plain-English answer. Every step streams live into the chat window so users can see the AI thinking. The full trace is also logged to LangSmith so the team can inspect, debug, and evaluate every query.
+The Demografy Insights Chatbot is a **Streamlit v4** app: **`app_v4.py`** and **`components/`** render the shell and a **custom chat iframe**; **`chat_engine.py`** turns user actions into calls to **`sql_agent.ask`**, which combines **guardrails**, **template** answers, and a **LangChain + Gemini SQL agent** against **BigQuery**, using **`prompts.py`** as the instruction manual. Replies are **plain English** in the UI; **per-thread JSONL** history lives under **`chat_history/`**; **sign-in and tiers** come from **`user_profile.py`** and **`auth/rbac.py`**. Optional **LangSmith** tracing and the **`eval/`** suites help the team prove quality and debug issues.
 
 ---
 
-*Document written: April 2026 | Project: Demografy AI Internship — Team D*
+*Document updated: May 2026 | Project: Demografy AI Internship — Team D*
